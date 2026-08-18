@@ -21,8 +21,13 @@ func TestResolveNamespace(t *testing.T) {
 	for _, v := range invalid {
 		func() {
 			defer func() {
-				if rec := recover(); rec == nil {
+				rec := recover()
+				if rec == nil {
 					t.Fatalf("resolveNamespace(%q) did not panic", v)
+				}
+				want := "COMPLEMENT_CRYPTO_NAMESPACE must contain only characters in [A-Za-z0-9_.-], got: " + v
+				if rec != want {
+					t.Fatalf("resolveNamespace(%q) panic = %q, want %q", v, rec, want)
 				}
 			}()
 			resolveNamespace(v)
