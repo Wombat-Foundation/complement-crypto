@@ -41,9 +41,18 @@ _build-rust-sdk dir:
     #!/usr/bin/env bash
     set -euxo pipefail
 
-    cd "{{ dir }}" 
+    cd "{{ dir }}"
 
-    cargo build -p matrix-sdk-ffi --features 'sentry, _only-for-testing-disable-megolm-minimum-rotation-period-ms'
+    # The `_disable-minimum-rotation-period-ms` feature lives on matrix-sdk-crypto,
+    # not on matrix-sdk-ffi, so it cannot be passed via `--features` here. Patch the
+    # workspace Cargo.toml to inject it into the crypto dep (mirroring upstream
+    # rebuild_rust_sdk.sh), and restore both files afterwards.
+    cp Cargo.toml Cargo.toml.backup
+    cp Cargo.lock Cargo.lock.backup
+    trap 'mv -f Cargo.toml.backup Cargo.toml; mv -f Cargo.lock.backup Cargo.lock' EXIT
+    sed -i.bak 's#matrix-sdk-crypto = {#matrix-sdk-crypto = {features = ["_disable-minimum-rotation-period-ms"],#' Cargo.toml
+
+    cargo build -p matrix-sdk-ffi --features 'sentry'
     uniffi-bindgen-go -o {{ COMPLEMENT_DIR }}/internal/api/rust --config {{ COMPLEMENT_DIR }}/uniffi.toml --library ./target/debug/libmatrix_sdk_ffi.a
 
 # Add the cgo LDFLAGS directive to the generated bindings.
