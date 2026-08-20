@@ -21,6 +21,11 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// mustClaimFallbackKey claims the fallback key for the target user.
+// The SDK uploads its fallback key asynchronously after learning it needs
+// one (via device_unused_fallback_key_types in the sync response), so it
+// may not have landed yet when the test first claims it. Retry until it
+// appears rather than failing on the first (empty) claim.
 func mustClaimFallbackKey(t *testing.T, claimer *client.CSAPI, target *cc.User) (fallbackKeyID string, keyJSON gjson.Result) {
 	t.Helper()
 	// The SDK uploads its fallback key asynchronously after learning it needs
@@ -37,8 +42,8 @@ func mustClaimFallbackKey(t *testing.T, claimer *client.CSAPI, target *cc.User) 
 			},
 		},
 	}), client.WithRetryUntil(10*time.Second, func(res *http.Response) bool {
-		res.Body.Close()
 		result = must.ParseJSON(t, res.Body)
+		res.Body.Close()
 		otks := result.Get(fmt.Sprintf(
 			"one_time_keys.%s.%s", client.GjsonEscape(target.UserID), client.GjsonEscape(target.DeviceID),
 		))
@@ -63,6 +68,7 @@ func mustClaimFallbackKey(t *testing.T, claimer *client.CSAPI, target *cc.User) 
 	return fallbackKeyID, fallbackKey
 }
 
+// mustClaimOTKs repeatedly claims one-time keys for the target user until otkCount keys have been claimed.
 func mustClaimOTKs(t *testing.T, claimer *client.CSAPI, target *cc.User, otkCount int) {
 	t.Helper()
 	for i := 0; i < otkCount; i++ {
@@ -171,6 +177,7 @@ func TestFallbackKeyIsUsedIfOneTimeKeysRunOut(t *testing.T) {
 	})
 }
 
+// TestFailedOneTimeKeyUploadRetries tests that the client retries uploading one-time keys if the upload fails.
 func TestFailedOneTimeKeyUploadRetries(t *testing.T) {
 	Instance().ForEachClientType(t, func(t *testing.T, clientType api.ClientType) {
 		tc := Instance().CreateTestContext(t, clientType, clientType)
@@ -219,6 +226,7 @@ func TestFailedOneTimeKeyUploadRetries(t *testing.T) {
 	})
 }
 
+// TestFailedKeysClaimRetries tests that the client retries claiming one-time keys if the claim fails.
 func TestFailedKeysClaimRetries(t *testing.T) {
 	Instance().ForEachClientType(t, func(t *testing.T, clientType api.ClientType) {
 		tc := Instance().CreateTestContext(t, clientType, clientType)

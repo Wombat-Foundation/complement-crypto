@@ -51,7 +51,11 @@ _build-rust-sdk dir:
     cp Cargo.lock Cargo.lock.backup
     trap 'mv -f Cargo.toml.backup Cargo.toml; mv -f Cargo.lock.backup Cargo.lock' EXIT
     sed -i.bak 's#matrix-sdk-crypto = {#matrix-sdk-crypto = {features = ["_disable-minimum-rotation-period-ms"],#' Cargo.toml
-
+    rm -f Cargo.toml.bak
+    if ! grep -q "_disable-minimum-rotation-period-ms" Cargo.toml; then
+        echo "Failed to inject _disable-minimum-rotation-period-ms feature" >&2
+        exit 1
+    fi
     cargo build -p matrix-sdk-ffi --features 'sentry'
     uniffi-bindgen-go -o {{ COMPLEMENT_DIR }}/internal/api/rust --config {{ COMPLEMENT_DIR }}/uniffi.toml --library ./target/debug/libmatrix_sdk_ffi.a
 
