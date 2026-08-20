@@ -23,7 +23,12 @@ import (
 
 func mustClaimFallbackKey(t *testing.T, claimer *client.CSAPI, target *cc.User) (fallbackKeyID string, keyJSON gjson.Result) {
 	t.Helper()
-	res := claimer.MustDo(t, "POST", []string{
+	// The SDK uploads its fallback key asynchronously after learning it needs
+	// one (via device_unused_fallback_key_types in the sync response), so it
+	// may not have landed yet when the test first claims it. Retry until it
+	// appears rather than failing on the first (empty) claim.
+	var result gjson.Result
+	claimer.MustDo(t, "POST", []string{
 		"_matrix", "client", "v3", "keys", "claim",
 	}, client.WithJSONBody(t, map[string]any{
 		"one_time_keys": map[string]any{
@@ -31,9 +36,18 @@ func mustClaimFallbackKey(t *testing.T, claimer *client.CSAPI, target *cc.User) 
 				target.DeviceID: "signed_curve25519",
 			},
 		},
+	}), client.WithRetryUntil(10*time.Second, func(res *http.Response) bool {
+		res.Body.Close()
+		result = must.ParseJSON(t, res.Body)
+		otks := result.Get(fmt.Sprintf(
+			"one_time_keys.%s.%s", client.GjsonEscape(target.UserID), client.GjsonEscape(target.DeviceID),
+		))
+		if otks.Exists() {
+			return true
+		}
+		t.Logf("fallback key not yet uploaded for %s|%s, retrying: %v", target.UserID, target.DeviceID, result.Raw)
+		return false
 	}))
-	defer res.Body.Close()
-	result := must.ParseJSON(t, res.Body)
 	otks := result.Get(fmt.Sprintf(
 		"one_time_keys.%s.%s", client.GjsonEscape(target.UserID), client.GjsonEscape(target.DeviceID),
 	))
