@@ -518,10 +518,12 @@ func (c *JSClient) GetEvent(t ct.TestLike, roomID, eventID string) (*api.Event, 
 	// }
 	// else just returns { event }
 	evSerialised, err := chrome.RunAsyncFn[string](t, c.browser.Ctx, fmt.Sprintf(`
-	return JSON.stringify(window.__client.getRoom("%s")?.getLiveTimeline()?.getEvents().filter((ev, i) => {
-		console.log("MustGetEvent["+i+"] => " + ev.getId()+ " " + JSON.stringify(ev.toJSON()));
-		return ev.getId() === "%s";
-	})[0].toJSON());
+	const room = window.__client.getRoom("%s");
+	const ev = room?.findEventById("%s");
+	if (!ev) {
+		throw new Error("event not found in room timelines");
+	}
+	return JSON.stringify(ev.toJSON());
 	`, roomID, eventID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get event %s: %s", eventID, err)
@@ -561,9 +563,11 @@ func (c *JSClient) GetEventShield(t ct.TestLike, roomID, eventID string) (*api.E
 	//    shieldReason: 0 ... 7
 	// }
 	encryptionInfoSerialised, err := chrome.RunAsyncFn[string](t, c.browser.Ctx, fmt.Sprintf(`
-		const ev = window.__client.getRoom("%s")?.getLiveTimeline()?.getEvents().filter((ev, i) => {
-			return ev.getId() === "%s";
-		})[0];
+		const room = window.__client.getRoom("%s");
+		const ev = room?.findEventById("%s");
+		if (!ev) {
+			throw new Error("event not found in room timelines");
+		}
 		const encryptionInfo = await window.__client.getCrypto().getEncryptionInfoForEvent(ev);
 		return JSON.stringify(encryptionInfo);
 	`, roomID, eventID))
