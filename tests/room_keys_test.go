@@ -559,7 +559,13 @@ func TestSpoofedEventSenderHandling(t *testing.T) {
 				wantMsgBody = "Another Test Message"
 				waiter = charlie.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 				spoofedEventID := alice.MustSendMessage(t, roomID, wantMsgBody)
+				// The MITM response rewrite and Bob's sync run asynchronously. Wait for
+				// Bob to receive this exact event before inspecting its decryption state:
+				// a fixed sleep can otherwise probe the live timeline before the delayed
+				// (but valid) /sync response has been committed.
+				bobWaiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(spoofedEventID))
 				waiter.Waitf(t, 5*time.Second, "Charlie did not see Alice's message")
+				bobWaiter.Waitf(t, 5*time.Second, "Bob did not receive the spoofed event")
 
 				// Decryption happens asynchronously, so give a chance for it to happen.
 				time.Sleep(1 * time.Second)
