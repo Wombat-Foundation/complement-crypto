@@ -108,7 +108,6 @@ func NewRustClient(t ct.TestLike, opts api.ClientCreationOpts) (api.Client, erro
 	}
 	// @alice:hs1, FOOBAR => alice_hs1_FOOBAR
 	username := strings.Replace(opts.UserID[1:], ":", "_", -1) + "_" + opts.DeviceID
-	ab = ab.Username(username)
 
 	sessionPath := "rust_storage/" + username
 	storeKey := []byte("my_secret_thirty-two_byte_string")
@@ -936,6 +935,22 @@ func (c *RustClient) ensureListening(t ct.TestLike, roomID string) {
 				ev := timelineItemToEvent(x.Value)
 				timeline = slices.Insert(timeline, 0, ev)
 				newEvents = append(newEvents, ev)
+			case matrix_sdk_ffi.TimelineDiffClear:
+				timeline = make([]*api.Event, 0)
+				c.logToFile(t, "[%s]_______ CLEAR", c.userID)
+			case matrix_sdk_ffi.TimelineDiffPopFront:
+				if len(timeline) > 0 {
+					timeline = slices.Delete(timeline, 0, 1)
+				}
+			case matrix_sdk_ffi.TimelineDiffPopBack:
+				if len(timeline) > 0 {
+					timeline = slices.Delete(timeline, len(timeline)-1, len(timeline))
+				}
+			case matrix_sdk_ffi.TimelineDiffTruncate:
+				n := int(x.Length)
+				if n < len(timeline) {
+					timeline = timeline[:n]
+				}
 			default:
 				t.Logf("Unhandled TimelineDiff change %v", d)
 			}
