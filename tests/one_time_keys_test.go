@@ -47,7 +47,10 @@ func mustClaimFallbackKey(t *testing.T, claimer *client.CSAPI, target *cc.User) 
 		otks := result.Get(fmt.Sprintf(
 			"one_time_keys.%s.%s", client.GjsonEscape(target.UserID), client.GjsonEscape(target.DeviceID),
 		))
-		if otks.Exists() {
+		// An ordinary OTK can still be in flight and win this claim before the fallback
+		// key has been uploaded. Only stop retrying once the claimed key is actually the
+		// fallback key, consuming (and discarding) any stray ordinary OTK along the way.
+		if otks.Exists() && otks.Get("signed_curve25519*.fallback").Bool() {
 			return true
 		}
 		t.Logf("fallback key not yet uploaded for %s|%s, retrying: %v", target.UserID, target.DeviceID, result.Raw)
