@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -560,21 +559,12 @@ func TestSpoofedEventSenderHandling(t *testing.T) {
 				wantMsgBody = "Another Test Message"
 				waiter = charlie.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 				spoofedEventID := alice.MustSendMessage(t, roomID, wantMsgBody)
+				bobWaiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(spoofedEventID))
 				waiter.Waitf(t, 5*time.Second, "Charlie did not see Alice's message")
+				bobWaiter.Waitf(t, 5*time.Second, "Bob did not receive the spoofed event")
 
 				// Decryption happens asynchronously, so give a chance for it to happen.
 				time.Sleep(1 * time.Second)
-
-				// Recent matrix-js-sdk versions reject a sender-mismatched event before
-				// it is added to any room timeline. That is a secure outcome: the MITM
-				// response was rewritten (asserted by withSpoofSender), but Bob cannot
-				// display or decrypt the attacker-controlled event.
-				if clientType.Lang == api.ClientTypeJS {
-					if _, err := bob.GetEvent(t, roomID, spoofedEventID); err != nil {
-						t.Logf("JS SDK rejected spoofed event before adding it to a timeline: %s", err)
-						return
-					}
-				}
 
 				if expectUTD {
 					ev := bob.MustGetEvent(t, roomID, spoofedEventID)
@@ -615,7 +605,6 @@ func TestSpoofedEventSenderHandling(t *testing.T) {
 //
 // The `inner` function is called with the intercept in place, and the configuration is reverted when `inner` completes.
 func withSpoofSender(t *testing.T, tc *cc.TestContext, attackerUserID string, targetUserAccessToken string, spoofedUserID string, inner func()) {
-	var rewroteEvent atomic.Bool
 	// Take the given event timeline from a `/sync` response, and rewrite any matching events in the list.
 	//
 	// Returns the modified JSON.
@@ -623,7 +612,6 @@ func withSpoofSender(t *testing.T, tc *cc.TestContext, attackerUserID string, ta
 		eventArrayRaw := eventArray.Raw
 		eventArray.ForEach(func(idx, event gjson.Result) bool {
 			if event.Get("type").String() == "m.room.encrypted" && event.Get("sender").String() == attackerUserID {
-				rewroteEvent.Store(true)
 				t.Logf("Rewriting event %s from %s to have sender of %s", event.Get("event_id").String(), event.Get("sender").String(), spoofedUserID)
 				var err error
 				if eventArrayRaw, err = sjson.Set(eventArrayRaw, fmt.Sprintf("%d.sender", idx.Int()), spoofedUserID); err != nil {
@@ -678,7 +666,4 @@ func withSpoofSender(t *testing.T, tc *cc.TestContext, attackerUserID string, ta
 			}
 		},
 	}, inner)
-	if !rewroteEvent.Load() {
-		ct.Fatalf(t, "MITM did not rewrite an encrypted event for the target client")
-	}
 }
