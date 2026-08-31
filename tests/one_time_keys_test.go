@@ -41,7 +41,7 @@ func mustClaimFallbackKey(t *testing.T, claimer *client.CSAPI, target *cc.User) 
 				target.DeviceID: "signed_curve25519",
 			},
 		},
-	}), client.WithRetryUntil(10*time.Second, func(res *http.Response) bool {
+	}), client.WithRetryUntil(30*time.Second, func(res *http.Response) bool {
 		result = must.ParseJSON(t, res.Body)
 		res.Body.Close()
 		otks := result.Get(fmt.Sprintf(
@@ -53,6 +53,11 @@ func mustClaimFallbackKey(t *testing.T, claimer *client.CSAPI, target *cc.User) 
 		if otks.Exists() && otks.Get("signed_curve25519*.fallback").Bool() {
 			return true
 		}
+		// The target's client may be uploading its newly-generated fallback key against a
+		// /keys/upload endpoint that a test is deliberately (and unconditionally) blocking
+		// for the whole intercepted window (see TestFallbackKeyIsUsedIfOneTimeKeysRunOut).
+		// That upload retries with its own SDK-internal backoff, independent of and
+		// unsynchronized with this poll, so give it real headroom rather than a tight 10s.
 		t.Logf("fallback key not yet uploaded for %s|%s, retrying: %v", target.UserID, target.DeviceID, result.Raw)
 		return false
 	}))
