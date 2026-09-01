@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	"net/http"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -107,28 +106,6 @@ func mustClaimOTKs(t *testing.T, claimer *client.CSAPI, target *cc.User, otkCoun
 	}
 }
 
-// mustSendMessageRetryUnconfigured sends a message, retrying if the client reports the room
-// isn't configured for encryption yet. matrix-js-sdk's crypto module can take a moment to
-// finish processing m.room.encryption after the client has already observed the room (e.g.
-// via a join event), independent of the homeserver: the state event is delivered promptly,
-// but the SDK's own internal setup for it hasn't completed yet. See
-// https://github.com/matrix-org/matrix-js-sdk/issues/4499 (or file a fresh one if resolved).
-func mustSendMessageRetryUnconfigured(t *testing.T, c api.TestClient, roomID, text string) (eventID string) {
-	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		eventID, err := c.SendMessage(t, roomID, text)
-		if err == nil {
-			return eventID
-		}
-		if !strings.Contains(err.Error(), "unconfigured room") || time.Now().After(deadline) {
-			ct.Fatalf(t, "MustSendMessage: %s", err)
-		}
-		t.Logf("send failed with room not yet configured for encryption, retrying: %s", err)
-		time.Sleep(200 * time.Millisecond)
-	}
-}
-
 // - Alice logs in, uploads OTKs AND A FALLBACK KEY (which is what this is trying to test!)
 // - Block all /keys/upload
 // - Manually claim all OTKs in the test.
@@ -176,20 +153,27 @@ func TestFallbackKeyIsUsedIfOneTimeKeysRunOut(t *testing.T) {
 				fallbackKeyID, fallbackKey := mustClaimFallbackKey(t, otkGobbler, tc.Alice)
 				t.Logf("claimed fallback key %s => %s", fallbackKeyID, fallbackKey.Raw)
 
-				// now bob & charlie try to talk to alice, the fallback key should be used
+				// now bob & charlie try to talk to alice, the fallback key should be used.
+				// Use a public room joined directly (no invite) rather than an invite+join:
+				// matrix-js-sdk's classic /sync handler only wires up crypto for a room
+				// (onCryptoEvent) from the join-transition's state, not from invite_state, so
+				// a client that first sees m.room.encryption via an invite can end up with
+				// its room permanently "unconfigured" for encryption - a real client-side gap
+				// (see https://github.com/matrix-org/matrix-js-sdk/issues/4499), but unrelated
+				// to what this test is trying to exercise (fallback-key usage). Direct joins
+				// sidestep it and keep this test deterministic.
 				roomID = tc.CreateNewEncryptedRoom(
 					t,
 					tc.Bob,
 					cc.EncRoomOptions.PresetPublicChat(),
-					cc.EncRoomOptions.Invite([]string{tc.Alice.UserID, tc.Charlie.UserID}),
 				)
 				tc.Charlie.MustJoinRoom(t, roomID, []spec.ServerName{keyConsumerClientType.HS})
 				tc.Alice.MustJoinRoom(t, roomID, []spec.ServerName{keyConsumerClientType.HS})
 				charlie.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(alice.UserID(), "join")).Waitf(t, 5*time.Second, "charlie did not see alice's join")
 				bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(alice.UserID(), "join")).Waitf(t, 5*time.Second, "bob did not see alice's join")
 				alice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(alice.UserID(), "join")).Waitf(t, 5*time.Second, "alice did not see own join")
-				mustSendMessageRetryUnconfigured(t, bob, roomID, "Hello world!")
-				mustSendMessageRetryUnconfigured(t, charlie, roomID, "Goodbye world!")
+				bob.MustSendMessage(t, roomID, "Hello world!")
+				charlie.MustSendMessage(t, roomID, "Goodbye world!")
 				waiter = alice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody("Hello world!"))
 				// ensure that /keys/upload is actually blocked (OTK count should be 0)
 				res, _ := tc.Alice.MustSync(t, client.SyncReq{})
