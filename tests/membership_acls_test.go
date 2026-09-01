@@ -281,8 +281,11 @@ func TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 	})
 }
 
-// This test is an EXPECTED FAIL in today's Matrix, due to lack of re-encryption for new devices
-// Alice invites Bob, Bob changes their device, then Bob joins. Bob should be able to see Alice's message.
+// Alice invites Bob, Bob changes their device, then Bob joins. Bob should be able to see
+// Alice's message: the room is `history_visibility: shared` (PresetPublicChat), so clients
+// are expected to forward the room key to a newly-joined device for pre-join messages. That
+// forwarding happens asynchronously in the background (it isn't tied to backpagination or the
+// event landing in the timeline), so poll for it rather than checking once.
 func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 	Instance().ClientTypeMatrix(t, func(t *testing.T, clientTypeA, clientTypeB api.ClientType) {
 		tc := Instance().CreateTestContext(t, clientTypeA, clientTypeB)
@@ -312,9 +315,20 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 				waiter := bob2.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(evID))
 				waiter.Waitf(t, 1*time.Second, "Bob did not see Alice's message %s", evID)
 
-				event := bob2.MustGetEvent(t, roomID, evID)
-				must.Equal(t, event.FailedToDecrypt, true, "bob2 was able to decrypt the message: expected this to fail")
-				// must.Equal(t, event.Text, body, "bob2 failed to decrypt body")
+				// Shared-history key forwarding to the new device happens asynchronously and
+				// isn't signalled by any event we can wait on, so poll until it lands rather
+				// than checking once right after the event appears in the timeline.
+				var event *api.Event
+				deadline := time.Now().Add(10 * time.Second)
+				for {
+					event = bob2.MustGetEvent(t, roomID, evID)
+					if !event.FailedToDecrypt || time.Now().After(deadline) {
+						break
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+				must.Equal(t, event.FailedToDecrypt, false, "bob2 was unable to decrypt the message: shared-history key forwarding to the new device did not happen")
+				must.Equal(t, event.Text, body, "bob2 decrypted the wrong body")
 			})
 		})
 	})
