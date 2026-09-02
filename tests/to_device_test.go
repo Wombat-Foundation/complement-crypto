@@ -540,9 +540,15 @@ func TestToDeviceMessagesAreProcessedInOrder(t *testing.T) {
 
 				lastTimelineEvent := timelineEvents[len(timelineEvents)-1]
 				alice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(lastTimelineEvent.ID)).Waitf(
-					// wait a while here as we need to wait for both /sync to retry and a large response
-					// to be processed.
-					t, 20*time.Second, "did not see latest timeline event %s", lastTimelineEvent.ID,
+					// Alice's /sync was blocked for the whole burst above, so on unblock she has
+					// to retry /sync, receive a large backlog (120 to-device room-key shares from
+					// rotation_period_msgs=1, plus 120 timeline events), and establish/process all
+					// of it before decrypting the last event. Observed timing out here at 20s
+					// (rust.go's TimelineDiff log shows steady incremental progress right up to
+					// the timeout, not a stall) - bumping to give this legitimately heavy catch-up
+					// more headroom, matching the reasoning for TestToDeviceMessagesAreBatched's
+					// SendMessage timeout above.
+					t, 60*time.Second, "did not see latest timeline event %s", lastTimelineEvent.ID,
 				)
 				// now verify we can decrypt all the events
 				time.Sleep(10 * time.Second)
