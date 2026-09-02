@@ -862,6 +862,22 @@ func (c *RustClient) ensureListening(t ct.TestLike, roomID string) {
 		return
 	}
 
+	// Without an explicit room subscription, the sliding sync `pos` for this room
+	// only ever advances via whatever small timeline_limit the "all rooms" list
+	// uses for previews (e.g. 1-10). That's fine when events trickle in one at a
+	// time, but under concurrent load a burst of room state (joins, membership
+	// changes) plus messages can exceed that window in a single poll; the server
+	// correctly reports `limited: true` with a `prev_batch` pointing before the
+	// gap, but nothing here ever triggers backpagination to close it, so a
+	// message that fell into the truncated portion is silently never delivered.
+	// Subscribing before we start consuming the timeline requests a much larger
+	// window (SDK default: 20) on every subsequent poll for this room, giving
+	// real headroom so this doesn't happen in the first place - this mirrors
+	// what a real client does when a room is actually open/visible.
+	if err := c.syncService.RoomListService().SubscribeToRooms([]string{roomID}); err != nil {
+		c.Logf(t, "[%s]ensureListening[%s] failed to subscribe to room: %s", c.userID, roomID, err)
+	}
+
 	c.Logf(t, "[%s]AddTimelineListener[%s]", c.userID, roomID)
 	// we need a timeline listener before we can send messages. Ensure we insert the initial
 	// set of items prior to handling updates. If we don't wait, we risk the listener firing
