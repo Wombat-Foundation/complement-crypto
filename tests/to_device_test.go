@@ -362,7 +362,13 @@ func TestToDeviceMessagesAreBatched(t *testing.T) {
 					return nil
 				},
 			}, func() {
-				alice.MustSendMessage(t, roomID, "this should cause to-device msgs to be sent")
+				// Sending to 100 recipients cold (fresh Olm sessions, OTK claims) can
+				// legitimately take longer than the client wrapper's default
+				// wait-for-local-echo timeout, so give this specific send extra headroom
+				// rather than raising the default for every other test.
+				if _, err := alice.SendMessage(t, roomID, "this should cause to-device msgs to be sent", 60*time.Second); err != nil {
+					t.Fatalf("MustSendMessage: %s", err)
+				}
 				time.Sleep(time.Second)
 				waiter.Waitf(t, 5*time.Second, "did not see /sendToDevice")
 			})

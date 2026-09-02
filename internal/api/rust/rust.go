@@ -23,7 +23,7 @@ import (
 
 // LogTarget is the name of the `target` we use in logToFile: it is in effect a fake "crate" that we tell the
 // rust-sdk is producing the logs.
-const LogTarget = "complement_crypto";
+const LogTarget = "complement_crypto"
 
 func DeleteOldLogs(prefix string) {
 	// delete old log files
@@ -39,7 +39,7 @@ func SetupLogs(prefix string) {
 	// log new files
 	matrix_sdk_ffi.InitPlatform(matrix_sdk_ffi.TracingConfiguration{
 		LogLevel:              matrix_sdk_ffi.LogLevelTrace,
-		ExtraTargets:          []string {LogTarget},
+		ExtraTargets:          []string{LogTarget},
 		WriteToStdoutOrSystem: false,
 		WriteToFiles: &matrix_sdk_ffi.TracingFileConfiguration{
 			Path:       "./logs",
@@ -104,7 +104,7 @@ func NewRustClient(t ct.TestLike, opts api.ClientCreationOpts) (api.Client, erro
 	xprocessName := opts.GetExtraOption(CrossProcessStoreLocksHolderName, "").(string)
 	if xprocessName != "" {
 		t.Logf("setting cross process store locks holder name=%s", xprocessName)
-		ab = ab.CrossProcessLockConfig(matrix_sdk_ffi.CrossProcessLockConfigMultiProcess { xprocessName })
+		ab = ab.CrossProcessLockConfig(matrix_sdk_ffi.CrossProcessLockConfigMultiProcess{xprocessName})
 	}
 	// @alice:hs1, FOOBAR => alice_hs1_FOOBAR
 	username := strings.Replace(opts.UserID[1:], ":", "_", -1) + "_" + opts.DeviceID
@@ -674,11 +674,15 @@ func (c *RustClient) Type() api.ClientTypeLang {
 	return api.ClientTypeRust
 }
 
-func (c *RustClient) SendMessage(t ct.TestLike, roomID, text string) (eventID string, err error) {
+func (c *RustClient) SendMessage(t ct.TestLike, roomID, text string, timeout ...time.Duration) (eventID string, err error) {
 	c.FFISpan.Enter()
 	defer c.FFISpan.Exit()
 
 	t.Helper()
+	waitFor := 11 * time.Second
+	if len(timeout) > 0 {
+		waitFor = timeout[0]
+	}
 	var isChannelClosed atomic.Bool
 	ch := make(chan bool)
 	// we need a timeline listener before we can send messages, AND that listener must be attached to the
@@ -722,8 +726,8 @@ func (c *RustClient) SendMessage(t ct.TestLike, roomID, text string) (eventID st
 	}
 	timeline.Send(matrix_sdk_ffi.MessageEventContentFromHtml(text, text))
 	select {
-	case <-time.After(11 * time.Second):
-		err = fmt.Errorf("SendMessage(rust) %s: timed out after 11s", c.userID)
+	case <-time.After(waitFor):
+		err = fmt.Errorf("SendMessage(rust) %s: timed out after %s", c.userID, waitFor)
 		return
 	case <-ch:
 		return
@@ -828,7 +832,7 @@ func (c *RustClient) Logf(t ct.TestLike, format string, args ...interface{}) {
 func (c *RustClient) logToFile(t ct.TestLike, format string, args ...interface{}) {
 	c.FFISpan.Enter()
 	defer c.FFISpan.Exit()
-	matrix_sdk_ffi.LogEvent("rust.go", &zero, matrix_sdk_ffi.LogLevelInfo, LogTarget + "::" + t.Name(), fmt.Sprintf(format, args...))
+	matrix_sdk_ffi.LogEvent("rust.go", &zero, matrix_sdk_ffi.LogLevelInfo, LogTarget+"::"+t.Name(), fmt.Sprintf(format, args...))
 }
 
 func (c *RustClient) ensureListening(t ct.TestLike, roomID string) {

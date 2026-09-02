@@ -692,8 +692,11 @@ func (c *JSClient) IsRoomEncrypted(t ct.TestLike, roomID string) (bool, error) {
 	return *isEncrypted, nil
 }
 
-func (c *JSClient) SendMessage(t ct.TestLike, roomID, text string) (eventID string, err error) {
+func (c *JSClient) SendMessage(t ct.TestLike, roomID, text string, timeout ...time.Duration) (eventID string, err error) {
 	t.Helper()
+	// JS has no internal wait-for-local-echo timeout to override (chrome.RunAsyncFn awaits
+	// the underlying JS promise directly), so a caller-supplied timeout is a no-op here.
+	_ = timeout
 	res, err := chrome.RunAsyncFn[map[string]interface{}](t, c.browser.Ctx, fmt.Sprintf(`
 	return await window.__client.sendMessage("%s", {
 		"msgtype": "m.text",

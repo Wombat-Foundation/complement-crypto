@@ -78,7 +78,7 @@ func TestMain(m *testing.M) {
 		})
 	}
 	rust.SetupLogs("rust_sdk_logs")
-	js.SetupJSLogs("./logs/js_sdk.log") // rust sdk logs on its own
+	js.SetupJSLogs("./logs/js_sdk.log")                                                                    // rust sdk logs on its own
 	complement.TestMain(m, "clienttests", complement.WithCleanup(func(conf *complementconfig.Complement) { // always teardown even if panicking
 		ssMutex.Lock()
 		if ssDeployment != nil {
@@ -143,7 +143,7 @@ func TestReceiveTimeline(t *testing.T) {
 		stopSyncing := client.MustStartSyncing(t)
 		defer stopSyncing()
 		// Subscribe to the room, so that sliding sync returns all events.
-		must.NotError(t,"could not subscribe to room", client.SubscribeToRoom(t, roomID))
+		must.NotError(t, "could not subscribe to room", client.SubscribeToRoom(t, roomID))
 
 		time.Sleep(time.Second) // give time for syncing to be well established.
 		// send the messages whilst syncing.
@@ -229,7 +229,7 @@ func TestSendingEvents(t *testing.T) {
 
 // run a subtest for each client factory
 func ForEachClient(t *testing.T, name string, deployment *deploy.ComplementCryptoDeployment, fn func(t *testing.T, client api.TestClient, csapi *client.CSAPI)) {
-	testWrapper := func (createClient func (t *testing.T, cfg api.ClientCreationOpts) api.TestClient) {
+	testWrapper := func(createClient func(t *testing.T, cfg api.ClientCreationOpts) api.TestClient) {
 		csapiAlice := deployment.Register(t, "hs1", helpers.RegistrationOpts{
 			LocalpartSuffix: "client",
 			Password:        "complement-crypto-password",

@@ -31,7 +31,7 @@ func main() {
 	go httpServer.Serve(listener)
 
 	// Wait for `Server.Close` to be called, then shut down the HTTP server.
-	<- srvDoneChannel
+	<-srvDoneChannel
 	fmt.Println("Server starting clean shutdown...")
 	err = httpServer.Shutdown(context.Background())
 	if err != nil {
