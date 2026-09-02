@@ -1,22 +1,14 @@
 package tests
 
 import (
-	"crypto/ecdh"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/ct"
-	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 
 	"github.com/matrix-org/complement-crypto/internal/api"
@@ -264,96 +256,39 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartJS(t *testing.T, tc *cc.Te
 	})
 }
 
+// keyGenMu serializes calls into CSAPI.MustGenerateOneTimeKeys, which draws
+// from a package-level, unlocked math/rand.Rand (`prng` in complement's
+// client.go, seeded deterministically - not safe for concurrent use per
+// math/rand's docs). Registration, room-join and the actual /keys/upload
+// HTTP calls stay unlocked and run fully in parallel; only the fast, local
+// key-generation step is serialized.
+var keyGenMu sync.Mutex
+
 // registerAndUploadKeys registers a user, joins them to a room, and uploads
 // device keys + OTKs via raw /keys/upload — without spinning up an FFI SDK
 // client. This is ~25x faster than MustLoginClient for the setup phase of
 // stress tests that only need the server to know about N devices.
 //
-// Returns an error instead of calling t.Fatalf so it is safe to call from
-// goroutines (Go's testing package requires FailNow to be called from the
-// goroutine running the test function).
-func registerAndUploadKeys(t *testing.T, tc *cc.TestContext, clientType api.ClientType, roomID string, deviceID string, otkCount int) error {
+// Key generation/signing reuses complement's existing CSAPI.MustGenerateOneTimeKeys,
+// which crucially signs against c.DeviceID - the real device ID assigned by
+// /register - rather than an ID we invent ourselves; congruent rejects a
+// device_keys upload whose device_id doesn't match the uploading device.
+//
+// This calls the Must* family (which call t.Fatalf/ct.Fatalf on failure) from
+// inside a goroutine. That's safe here: *testing.T's Fail/Log methods are
+// documented safe for concurrent use, and FailNow's one restriction - "does
+// not stop other goroutines" - is fine since each goroutine is independent
+// and its `defer wg.Done()` still runs during FailNow's unwind. The caller
+// must check t.Failed() after wg.Wait() instead of relying on a return value,
+// since FailNow unwinds via runtime.Goexit and never actually returns to the
+// caller on the failure path.
+func registerAndUploadKeys(t *testing.T, tc *cc.TestContext, clientType api.ClientType, roomID string, otkCount uint) {
 	user := tc.RegisterNewUser(t, clientType, "bob")
-	// Use non-fatal JoinRoom so a failure returns an error instead of calling
-	// t.FailNow from a goroutine (which only kills that goroutine, not the test).
-	res := user.JoinRoom(t, roomID, []spec.ServerName{clientType.HS})
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("join room: HTTP %d", res.StatusCode)
-	}
-	res.Body.Close()
-
-	// Ed25519 keypair — signing key for device_keys and OTKs.
-	edPub, edPriv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return fmt.Errorf("ed25519.GenerateKey: %w", err)
-	}
-	// Curve25519 keypair — identity key for Olm.
-	curvePriv, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		return fmt.Errorf("ecdh X25519 GenerateKey: %w", err)
-	}
-
-	keyID := gomatrixserverlib.KeyID("ed25519:" + deviceID)
-	edPubB64 := base64.RawStdEncoding.EncodeToString(edPub)
-	curvePubB64 := base64.RawStdEncoding.EncodeToString(curvePriv.PublicKey().Bytes())
-
-	// Build and sign device_keys.
-	deviceKeys := map[string]interface{}{
-		"user_id":    user.UserID,
-		"device_id":  deviceID,
-		"algorithms": []string{"m.olm.v1.curve25519-aes-sha2", "m.megolm.v1.aes-sha2"},
-		"keys": map[string]string{
-			"ed25519:" + deviceID:    edPubB64,
-			"curve25519:" + deviceID: curvePubB64,
-		},
-	}
-	deviceKeysJSON, err := json.Marshal(deviceKeys)
-	if err != nil {
-		return fmt.Errorf("marshal device_keys: %w", err)
-	}
-	signedDeviceKeysJSON, err := gomatrixserverlib.SignJSON(user.UserID, keyID, edPriv, deviceKeysJSON)
-	if err != nil {
-		return fmt.Errorf("sign device_keys: %w", err)
-	}
-
-	// Generate and sign OTKs.
-	oneTimeKeys := make(map[string]interface{}, otkCount)
-	for i := 0; i < otkCount; i++ {
-		otkPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
-		if err != nil {
-			return fmt.Errorf("ecdh X25519 GenerateKey for OTK: %w", err)
-		}
-		otk := map[string]interface{}{
-			"key": base64.RawStdEncoding.EncodeToString(otkPriv.PublicKey().Bytes()),
-		}
-		otkJSON, err := json.Marshal(otk)
-		if err != nil {
-			return fmt.Errorf("marshal OTK: %w", err)
-		}
-		signedOtkJSON, err := gomatrixserverlib.SignJSON(user.UserID, keyID, edPriv, otkJSON)
-		if err != nil {
-			return fmt.Errorf("sign OTK: %w", err)
-		}
-		var parsedOtk map[string]interface{}
-		if err := json.Unmarshal(signedOtkJSON, &parsedOtk); err != nil {
-			return fmt.Errorf("unmarshal signed OTK: %w", err)
-		}
-		oneTimeKeys["signed_curve25519:"+fmt.Sprintf("%04d", i)] = parsedOtk
-	}
-
-	// Upload everything in a single POST /keys/upload (non-fatal).
-	uploadRes := user.Do(t, "POST", []string{"_matrix", "client", "v3", "keys", "upload"},
-		client.WithJSONBody(t, map[string]interface{}{
-			"device_keys":   json.RawMessage(signedDeviceKeysJSON),
-			"one_time_keys": oneTimeKeys,
-		}),
-	)
-	defer uploadRes.Body.Close()
-	if uploadRes.StatusCode < 200 || uploadRes.StatusCode >= 300 {
-		body, _ := io.ReadAll(uploadRes.Body)
-		return fmt.Errorf("keys/upload: HTTP %d: %s", uploadRes.StatusCode, string(body))
-	}
-	return nil
+	user.MustJoinRoom(t, roomID, []spec.ServerName{clientType.HS})
+	keyGenMu.Lock()
+	deviceKeys, oneTimeKeys := user.MustGenerateOneTimeKeys(t, otkCount)
+	keyGenMu.Unlock()
+	user.MustUploadKeys(t, deviceKeys, oneTimeKeys)
 }
 
 // Regression test for https://github.com/element-hq/element-web/issues/24680
@@ -378,21 +313,19 @@ func TestToDeviceMessagesAreBatched(t *testing.T) {
 		// MustLoginClient calls.
 		const numUsers = 100
 		const otkCount = 50
-		errs := make([]error, numUsers)
 		var wg sync.WaitGroup
 		wg.Add(numUsers)
 		for i := 0; i < numUsers; i++ {
-			go func(idx int) {
+			go func() {
 				defer wg.Done()
-				deviceID := fmt.Sprintf("DEVICE_%05d", idx)
-				errs[idx] = registerAndUploadKeys(t, tc, clientType, roomID, deviceID, otkCount)
-			}(i)
+				registerAndUploadKeys(t, tc, clientType, roomID, otkCount)
+			}()
 		}
 		wg.Wait()
-		for _, err := range errs {
-			if err != nil {
-				t.Fatalf("failed to register user with raw keys: %s", err)
-			}
+		if t.Failed() {
+			// A user's registration/join/key-upload already failed and logged why
+			// via the Must* helper above; nothing further to do.
+			return
 		}
 		t.Logf("registered %d users with raw device keys", numUsers)
 		waiter := helpers.NewWaiter()
