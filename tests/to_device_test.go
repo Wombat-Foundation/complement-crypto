@@ -1,13 +1,21 @@
 package tests
 
 import (
+	"crypto/ecdh"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/ct"
+	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 
 	"github.com/matrix-org/complement-crypto/internal/api"
@@ -255,6 +263,84 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartJS(t *testing.T, tc *cc.Te
 	})
 }
 
+// registerAndUploadKeys registers a user, joins them to a room, and uploads
+// device keys + OTKs via raw /keys/upload — without spinning up an FFI SDK
+// client. This is ~25x faster than MustLoginClient for the setup phase of
+// stress tests that only need the server to know about N devices.
+func registerAndUploadKeys(t *testing.T, tc *cc.TestContext, clientType api.ClientType, roomID string, deviceID string, otkCount int) {
+	t.Helper()
+	user := tc.RegisterNewUser(t, clientType, "bob")
+	user.MustJoinRoom(t, roomID, []spec.ServerName{clientType.HS})
+
+	// Ed25519 keypair — signing key for device_keys and OTKs.
+	edPub, edPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ed25519.GenerateKey: %s", err)
+	}
+	// Curve25519 keypair — identity key for Olm.
+	curvePriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("ecdh X25519 GenerateKey: %s", err)
+	}
+
+	keyID := gomatrixserverlib.KeyID("ed25519:" + deviceID)
+	edPubB64 := base64.RawStdEncoding.EncodeToString(edPub)
+	curvePubB64 := base64.RawStdEncoding.EncodeToString(curvePriv.PublicKey().Bytes())
+
+	// Build and sign device_keys.
+	deviceKeys := map[string]interface{}{
+		"user_id":    user.UserID,
+		"device_id":  deviceID,
+		"algorithms": []string{"m.olm.v1.curve25519-aes-sha2", "m.megolm.v1.aes-sha2"},
+		"keys": map[string]string{
+			"ed25519:" + deviceID:    edPubB64,
+			"curve25519:" + deviceID: curvePubB64,
+		},
+	}
+	deviceKeysJSON, err := json.Marshal(deviceKeys)
+	if err != nil {
+		t.Fatalf("marshal device_keys: %s", err)
+	}
+	signedDeviceKeysJSON, err := gomatrixserverlib.SignJSON(user.UserID, keyID, edPriv, deviceKeysJSON)
+	if err != nil {
+		t.Fatalf("sign device_keys: %s", err)
+	}
+
+	// Generate and sign OTKs.
+	oneTimeKeys := make(map[string]interface{}, otkCount)
+	for i := 0; i < otkCount; i++ {
+		otkPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("ecdh X25519 GenerateKey for OTK: %s", err)
+		}
+		otk := map[string]interface{}{
+			"key": base64.RawStdEncoding.EncodeToString(otkPriv.PublicKey().Bytes()),
+		}
+		otkJSON, err := json.Marshal(otk)
+		if err != nil {
+			t.Fatalf("marshal OTK: %s", err)
+		}
+		signedOtkJSON, err := gomatrixserverlib.SignJSON(user.UserID, keyID, edPriv, otkJSON)
+		if err != nil {
+			t.Fatalf("sign OTK: %s", err)
+		}
+		var parsedOtk map[string]interface{}
+		if err := json.Unmarshal(signedOtkJSON, &parsedOtk); err != nil {
+			t.Fatalf("unmarshal signed OTK: %s", err)
+		}
+		oneTimeKeys["signed_curve25519:"+fmt.Sprintf("%04d", i)] = parsedOtk
+	}
+
+	// Upload everything in a single POST /keys/upload.
+	user.MustDo(t, "POST", []string{"_matrix", "client", "v3", "keys", "upload"},
+		client.WithJSONBody(t, map[string]interface{}{
+			"device_keys":   json.RawMessage(signedDeviceKeysJSON),
+			"one_time_keys": oneTimeKeys,
+		}),
+	)
+	t.Logf("uploaded raw keys for %s (%d OTKs)", user.UserID, otkCount)
+}
+
 // Regression test for https://github.com/element-hq/element-web/issues/24680
 //
 // It's important that room keys are sent out ASAP, else the encrypted event may arrive
@@ -265,25 +351,29 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartJS(t *testing.T, tc *cc.Te
 // It does this by creating an E2EE room with 100 E2EE users, and forces a key rotation
 // by sending a message with rotation_period_msgs=1. It does not ensure that the room key
 // is correctly sent to all 100 users as that would entail having 100 users running at
-// the same time (think 100 browsers = expensive). Instead, we sequentially spin up 100
-// clients and then close them before doing the test, and assert we send 100 events.
-//
-// In the future, it may be difficult to run this test for 1 user with 100 devices due to
-// HS limits on the number of devices and forced cross-signing.
+// the same time (think 100 browsers = expensive). Instead, we register users via raw API,
+// upload device keys without spinning up SDK clients, and assert we send 100 events.
 func TestToDeviceMessagesAreBatched(t *testing.T) {
 	Instance().ForEachClientType(t, func(t *testing.T, clientType api.ClientType) {
 		tc := Instance().CreateTestContext(t, clientType)
 		roomID := tc.CreateNewEncryptedRoom(t, tc.Alice, cc.EncRoomOptions.RotationPeriodMsgs(1), cc.EncRoomOptions.PresetPublicChat())
-		// create 100 users
-		for i := 0; i < 100; i++ {
-			user := tc.RegisterNewUser(t, clientType, "bob")
-			user.MustJoinRoom(t, roomID, []spec.ServerName{clientType.HS})
-			// this blocks until it has uploaded OTKs/device keys
-			clientUnderTest := tc.MustLoginClient(t, &cc.ClientCreationRequest{
-				User: user,
-			})
-			clientUnderTest.Close(t)
+		// Register 100 users in parallel via raw API — each user just needs their
+		// device keys on the server so /sendToDevice has 100 targets. No FFI client
+		// required. This takes single-digit seconds vs ~500s for 100 sequential
+		// MustLoginClient calls.
+		const numUsers = 100
+		const otkCount = 50
+		var wg sync.WaitGroup
+		wg.Add(numUsers)
+		for i := 0; i < numUsers; i++ {
+			go func(idx int) {
+				defer wg.Done()
+				deviceID := fmt.Sprintf("DEVICE_%05d", idx)
+				registerAndUploadKeys(t, tc, clientType, roomID, deviceID, otkCount)
+			}(i)
 		}
+		wg.Wait()
+		t.Logf("registered %d users with raw device keys", numUsers)
 		waiter := helpers.NewWaiter()
 		tc.WithAliceSyncing(t, func(alice api.TestClient) {
 			// intercept /sendToDevice and check we are sending 100 messages per request
