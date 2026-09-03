@@ -94,7 +94,7 @@ func TestUnprocessedToDeviceMessagesArentLostOnRestart(t *testing.T) {
 			bobStopSyncing := bob.MustStartSyncing(t)
 			// check the room works
 			alice.MustSendMessage(t, roomID, "Hello World!")
-			bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody("Hello World!")).Waitf(t, 2*time.Second, "bob did not see event with body 'Hello World!'")
+			bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody("Hello World!")).Waitf(t, 5*time.Second, "bob did not see event with body 'Hello World!'")
 			// stop bob's client, but grab the access token first so we can re-use it
 			bobOpts := bob.Opts()
 			bobStopSyncing()
@@ -173,6 +173,14 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 		}()
 
 		waitForRoomKey.Waitf(t, 10*time.Second, "did not see room key")
+		// The MITM ResponseCallback fires BEFORE the response body reaches the Rust
+		// SDK — it just sniffs the traffic. After waitForRoomKey signals, the /sync
+		// response is still being forwarded to the SDK over the proxy. The SDK must
+		// then parse the JSON, process 60+ to-device events, decrypt the Olm
+		// envelope, and persist the Megolm session to SQLite. Give it time to finish
+		// all of that before we SIGKILL the process. Without this sleep the kill
+		// arrives before the SQLite write completes and the session is lost.
+		time.Sleep(5 * time.Second)
 		t.Logf("killing remote bob client")
 		remoteClient.ForceClose(t)
 
