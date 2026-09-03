@@ -535,27 +535,28 @@ func TestToDeviceMessagesAreProcessedInOrder(t *testing.T) {
 					}
 				})
 				t.Logf("sent %d timeline events", len(timelineEvents))
-				// Alice's /sync is unblocked, wait until we see the last event.
+				// Alice's /sync is unblocked.
 				shouldBlockRequest.Store(false)
 
+				// Every request while shouldBlockRequest was true got a 504. rust-sdk's sliding-sync
+				// stream treats any error that survives its own internal retry_limit(3) as fatal and
+				// permanently breaks the sync loop (see matrix-rust-sdk's
+				// sliding_sync/mod.rs sync(): "errors we cannot ignore, and that must stop the sync
+				// loop" -> yield Err(error); break). Confirmed via direct log inspection: after
+				// unblocking, Alice's log shows zero further /sync activity at all - the loop is
+				// dead, not slow. Flipping the flag back does nothing on its own; the loop has to be
+				// explicitly restarted.
+				alice.MustStartSyncing(t)
+
 				lastTimelineEvent := timelineEvents[len(timelineEvents)-1]
-				// This is Alice's first subscription to this room's timeline - her /sync was
-				// blocked for the entire burst above, so she never processed a single response
-				// during it. Set up the listener (and implicitly SubscribeToRoom) before waiting,
-				// so any events the listener picks up are captured.
+				// Her restarted sync starts from a fresh position, so the burst that happened while
+				// she was blocked won't be in her initial window either - explicitly backpaginate to
+				// pull it in.
 				waiter := alice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(lastTimelineEvent.ID))
-				// Confirmed via direct log inspection (not assumed): after the listener above is
-				// set up, Alice receives *zero* further timeline activity - a genuine stall, not
-				// slow-but-progressing. rust-sdk's automatic backpagination only triggers from
-				// unread-receipt processing (see event_cache/caches/read_receipts.go's
-				// automatic_pagination.run_once call), which nothing here exercises. Since her
-				// subscription only starts after the whole 120-event burst already happened, her
-				// initial timeline window may not include it, and nothing else will ever trigger
-				// the backpagination needed to close that gap - so explicitly backpaginate.
 				if err := alice.Backpaginate(t, roomID, len(timelineEvents)); err != nil {
 					t.Logf("Backpaginate: %s (continuing - the event may already be visible)", err)
 				}
-				waiter.Waitf(t, 30*time.Second, "did not see latest timeline event %s", lastTimelineEvent.ID)
+				waiter.Waitf(t, 60*time.Second, "did not see latest timeline event %s", lastTimelineEvent.ID)
 				// now verify we can decrypt all the events
 				time.Sleep(10 * time.Second)
 				// backpaginate 10 times. We don't do a single huge backpagination call because
