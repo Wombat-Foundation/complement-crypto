@@ -133,27 +133,19 @@ func TestUnprocessedToDeviceMessagesArentLostOnRestart(t *testing.T) {
 }
 
 func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.TestContext, bobOpts api.ClientCreationOpts, roomID, eventID string) {
-	// sniff /sync traffic
-	waitForRoomKey := helpers.NewWaiter()
+	// Use ActiveChannel to hold each /sync response at the proxy until we
+	// decide to forward it. Unlike a passive sniffing callback (which fires
+	// BEFORE the response body reaches the SDK), ActiveChannel lets us:
+	//   1. Inspect the response while the proxy is blocked.
+	//   2. Call Send(nil) to forward it to the SDK on our schedule.
+	//   3. Then wait for the SDK to actually process + persist before SIGKILL.
+	activeChannel := callback.NewActiveChannel(10 * time.Second)
+	defer activeChannel.Close()
 	tc.Deployment.MITM().Configure(t).WithIntercept(mitm.InterceptOpts{
 		Filter: mitm.FilterParams{
 			PathContains: "/sync",
 		},
-		ResponseCallback: func(cd callback.Data) *callback.Response {
-			// When /sync shows a to-device message from Alice (indicating the room key), then SIGKILL Bob.
-			t.Logf("/sync => %v", string(cd.ResponseBody))
-			body := gjson.ParseBytes(cd.ResponseBody)
-			toDeviceEvents := body.Get("extensions.to_device.events").Array() // Sliding Sync form
-			if len(toDeviceEvents) > 0 {
-				for _, ev := range toDeviceEvents {
-					if ev.Get("type").Str == "m.room.encrypted" {
-						t.Logf("detected potential room key")
-						waitForRoomKey.Finish()
-					}
-				}
-			}
-			return nil
-		},
+		ResponseCallback: activeChannel.Callback(),
 	}, func() {
 		// bob comes back online, and will be killed a short while later.
 		// No need to login as we will reuse the session from before.
@@ -172,17 +164,36 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 			remoteClient.StartSyncing(t)
 		}()
 
-		waitForRoomKey.Waitf(t, 10*time.Second, "did not see room key")
-		// The MITM ResponseCallback fires BEFORE the response body reaches the Rust
-		// SDK — it just sniffs the traffic. After waitForRoomKey signals, the /sync
-		// response is still being forwarded to the SDK over the proxy. The SDK must
-		// then parse the JSON, process 60+ to-device events, decrypt the Olm
-		// envelope, and persist the Megolm session to SQLite. Give it time to finish
-		// all of that before we SIGKILL the process. Without this sleep the kill
-		// arrives before the SQLite write completes and the session is lost.
-		time.Sleep(5 * time.Second)
-		t.Logf("killing remote bob client")
-		remoteClient.ForceClose(t)
+		// Process /sync responses until we see the room key. Each Recv() pulls
+		// one response that the proxy is holding; we inspect it, then Send(nil)
+		// to let the SDK receive it.
+		for {
+			cd := activeChannel.Recv(t, "did not see /sync response")
+			body := gjson.ParseBytes(cd.ResponseBody)
+			toDeviceEvents := body.Get("extensions.to_device.events").Array() // Sliding Sync form
+			if len(toDeviceEvents) > 0 {
+				for _, ev := range toDeviceEvents {
+					if ev.Get("type").Str == "m.room.encrypted" {
+						t.Logf("detected room key in /sync, forwarding to SDK")
+						// Forward this response to the SDK. Now the SDK will receive
+						// the response body, parse it, decrypt the Olm envelope, and
+						// persist the Megolm session to SQLite.
+						activeChannel.Send(t, nil)
+						// Wait for the SDK to finish processing + persisting. Because
+						// Send() returned, we know the SDK has the response in-flight.
+						// A 5s budget covers parsing 60+ to-device events, Olm decrypt,
+						// and SQLite WAL commit even under heavy host load.
+						time.Sleep(5 * time.Second)
+						t.Logf("killing remote bob client")
+						remoteClient.ForceClose(t)
+						goto phase3
+					}
+				}
+			}
+			// Not the room key — forward this response and keep listening.
+			activeChannel.Send(t, nil)
+		}
+	phase3:
 
 		// Ensure Bob can decrypt new messages sent from Alice.
 		tc.WithClientSyncing(t, &cc.ClientCreationRequest{
