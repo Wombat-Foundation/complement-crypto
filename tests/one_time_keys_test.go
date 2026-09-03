@@ -21,9 +21,19 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// mustClaimFallbackKey claims the fallback key for the target user.
+// The SDK uploads its fallback key asynchronously after learning it needs
+// one (via device_unused_fallback_key_types in the sync response), so it
+// may not have landed yet when the test first claims it. Retry until it
+// appears rather than failing on the first (empty) claim.
 func mustClaimFallbackKey(t *testing.T, claimer *client.CSAPI, target *cc.User) (fallbackKeyID string, keyJSON gjson.Result) {
 	t.Helper()
-	res := claimer.MustDo(t, "POST", []string{
+	// The SDK uploads its fallback key asynchronously after learning it needs
+	// one (via device_unused_fallback_key_types in the sync response), so it
+	// may not have landed yet when the test first claims it. Retry until it
+	// appears rather than failing on the first (empty) claim.
+	var result gjson.Result
+	claimer.MustDo(t, "POST", []string{
 		"_matrix", "client", "v3", "keys", "claim",
 	}, client.WithJSONBody(t, map[string]any{
 		"one_time_keys": map[string]any{
@@ -31,9 +41,26 @@ func mustClaimFallbackKey(t *testing.T, claimer *client.CSAPI, target *cc.User) 
 				target.DeviceID: "signed_curve25519",
 			},
 		},
+	}), client.WithRetryUntil(30*time.Second, func(res *http.Response) bool {
+		result = must.ParseJSON(t, res.Body)
+		res.Body.Close()
+		otks := result.Get(fmt.Sprintf(
+			"one_time_keys.%s.%s", client.GjsonEscape(target.UserID), client.GjsonEscape(target.DeviceID),
+		))
+		// An ordinary OTK can still be in flight and win this claim before the fallback
+		// key has been uploaded. Only stop retrying once the claimed key is actually the
+		// fallback key, consuming (and discarding) any stray ordinary OTK along the way.
+		if otks.Exists() && otks.Get("signed_curve25519*.fallback").Bool() {
+			return true
+		}
+		// The target's client may be uploading its newly-generated fallback key against a
+		// /keys/upload endpoint that a test is deliberately (and unconditionally) blocking
+		// for the whole intercepted window (see TestFallbackKeyIsUsedIfOneTimeKeysRunOut).
+		// That upload retries with its own SDK-internal backoff, independent of and
+		// unsynchronized with this poll, so give it real headroom rather than a tight 10s.
+		t.Logf("fallback key not yet uploaded for %s|%s, retrying: %v", target.UserID, target.DeviceID, result.Raw)
+		return false
 	}))
-	defer res.Body.Close()
-	result := must.ParseJSON(t, res.Body)
 	otks := result.Get(fmt.Sprintf(
 		"one_time_keys.%s.%s", client.GjsonEscape(target.UserID), client.GjsonEscape(target.DeviceID),
 	))
@@ -49,6 +76,7 @@ func mustClaimFallbackKey(t *testing.T, claimer *client.CSAPI, target *cc.User) 
 	return fallbackKeyID, fallbackKey
 }
 
+// mustClaimOTKs repeatedly claims one-time keys for the target user until otkCount keys have been claimed.
 func mustClaimOTKs(t *testing.T, claimer *client.CSAPI, target *cc.User, otkCount int) {
 	t.Helper()
 	for i := 0; i < otkCount; i++ {
@@ -125,12 +153,19 @@ func TestFallbackKeyIsUsedIfOneTimeKeysRunOut(t *testing.T) {
 				fallbackKeyID, fallbackKey := mustClaimFallbackKey(t, otkGobbler, tc.Alice)
 				t.Logf("claimed fallback key %s => %s", fallbackKeyID, fallbackKey.Raw)
 
-				// now bob & charlie try to talk to alice, the fallback key should be used
+				// now bob & charlie try to talk to alice, the fallback key should be used.
+				// Use a public room joined directly (no invite) rather than an invite+join:
+				// matrix-js-sdk's classic /sync handler only wires up crypto for a room
+				// (onCryptoEvent) from the join-transition's state, not from invite_state, so
+				// a client that first sees m.room.encryption via an invite can end up with
+				// its room permanently "unconfigured" for encryption - a real client-side gap
+				// (see https://github.com/matrix-org/matrix-js-sdk/issues/4499), but unrelated
+				// to what this test is trying to exercise (fallback-key usage). Direct joins
+				// sidestep it and keep this test deterministic.
 				roomID = tc.CreateNewEncryptedRoom(
 					t,
 					tc.Bob,
 					cc.EncRoomOptions.PresetPublicChat(),
-					cc.EncRoomOptions.Invite([]string{tc.Alice.UserID, tc.Charlie.UserID}),
 				)
 				tc.Charlie.MustJoinRoom(t, roomID, []spec.ServerName{keyConsumerClientType.HS})
 				tc.Alice.MustJoinRoom(t, roomID, []spec.ServerName{keyConsumerClientType.HS})
@@ -157,6 +192,7 @@ func TestFallbackKeyIsUsedIfOneTimeKeysRunOut(t *testing.T) {
 	})
 }
 
+// TestFailedOneTimeKeyUploadRetries tests that the client retries uploading one-time keys if the upload fails.
 func TestFailedOneTimeKeyUploadRetries(t *testing.T) {
 	Instance().ForEachClientType(t, func(t *testing.T, clientType api.ClientType) {
 		tc := Instance().CreateTestContext(t, clientType, clientType)
@@ -205,6 +241,7 @@ func TestFailedOneTimeKeyUploadRetries(t *testing.T) {
 	})
 }
 
+// TestFailedKeysClaimRetries tests that the client retries claiming one-time keys if the claim fails.
 func TestFailedKeysClaimRetries(t *testing.T) {
 	Instance().ForEachClientType(t, func(t *testing.T, clientType api.ClientType) {
 		tc := Instance().CreateTestContext(t, clientType, clientType)

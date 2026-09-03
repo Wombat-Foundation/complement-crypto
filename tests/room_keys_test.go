@@ -559,7 +559,9 @@ func TestSpoofedEventSenderHandling(t *testing.T) {
 				wantMsgBody = "Another Test Message"
 				waiter = charlie.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 				spoofedEventID := alice.MustSendMessage(t, roomID, wantMsgBody)
+				bobWaiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(spoofedEventID))
 				waiter.Waitf(t, 5*time.Second, "Charlie did not see Alice's message")
+				bobWaiter.Waitf(t, 5*time.Second, "Bob did not receive the spoofed event")
 
 				// Decryption happens asynchronously, so give a chance for it to happen.
 				time.Sleep(1 * time.Second)
@@ -643,7 +645,13 @@ func withSpoofSender(t *testing.T, tc *cc.TestContext, attackerUserID string, ta
 			// t.Logf("%s => %s", cd.URL, rawBody)
 			joinedRooms := gjson.Parse(rawBody).Get(roomListJSONPath)
 			joinedRooms.ForEach(func(roomID, room gjson.Result) bool {
-				patchedTimeline := patchTimeline(room.Get(timelineJSONPath))
+				timeline := room.Get(timelineJSONPath)
+				// Sliding Sync room updates may omit a timeline. Do not SetRaw an
+				// empty value: that creates an invalid callback response.
+				if !timeline.Exists() {
+					return true
+				}
+				patchedTimeline := patchTimeline(timeline)
 
 				jsonPath := fmt.Sprintf("%s.%s.%s", roomListJSONPath, gjson.Escape(roomID.String()), timelineJSONPath)
 				var err error

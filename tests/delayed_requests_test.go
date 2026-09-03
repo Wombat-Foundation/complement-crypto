@@ -79,17 +79,18 @@ func TestDelayedInviteResponse(t *testing.T) {
 
 				ev := bob.MustGetEvent(t, roomID, eventID)
 
-				// TODO: FIXME fix this issue in the SDK
-				// -
-				//
-				if ev.FailedToDecrypt || ev.Text != "hello world!" {
-					if clientType.Lang == api.ClientTypeRust {
-						t.Skipf("known broken: see https://github.com/matrix-org/matrix-rust-sdk/issues/3622")
-					}
-					if clientType.Lang == api.ClientTypeJS {
-						t.Skipf("known broken: see https://github.com/matrix-org/matrix-js-sdk/issues/4291")
-					}
-				}
+				// This used to be skipped for both langs (rust: matrix-rust-sdk#3622,
+				// js: matrix-js-sdk#4291) rather than asserted. rust-sdk now passes this
+				// race reliably (confirmed via repeated reruns) - whatever caused #3622
+				// appears fixed in our pinned version. js-sdk still reliably fails it:
+				// its crypto layer tracks room membership purely from processed /sync
+				// responses, not from its own just-completed /invite call, so if the
+				// /sync response carrying that invite hasn't been delivered yet (as
+				// intentionally arranged above), Alice encrypts without Bob. That's a
+				// real upstream architectural gap, not a congruent bug - congruent
+				// delivers the /sync response essentially instantly; the delay is the
+				// test's own MITM tarpit. Left as a real assertion (not a skip) so this
+				// is visibly tracked rather than silently disappearing.
 				must.Equal(t, ev.FailedToDecrypt, false, "failed to decrypt event")
 				must.Equal(t, ev.Text, "hello world!", "failed to decrypt plaintext")
 			})

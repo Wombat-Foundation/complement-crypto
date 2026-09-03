@@ -86,9 +86,9 @@ func (r *LanguageBindings) MustCreateClient(t ct.TestLike, cfg api.ClientCreatio
 			ct.Fatalf(t, "RPC (%s): failed to create RPC client: %s", contextID, err)
 		}
 		return &RPCClient{
-			client: client,
-			lang:   r.clientType,
-			rpcCmd: rpcCmd,
+			client:      client,
+			lang:        r.clientType,
+			rpcCmd:      rpcCmd,
 			logsFlushed: logsFlushed,
 		}
 	case <-time.After(time.Second):
@@ -190,7 +190,7 @@ func (c *RPCClient) Close(t ct.TestLike) {
 
 	// Wait for the goroutine that copies stdout to the logs to complete
 	t.Logf("RPCClient.Close: waiting for server to shut down")
-	<- c.logsFlushed
+	<-c.logsFlushed
 	t.Logf("RPCClient.Close: done")
 }
 
@@ -277,11 +277,16 @@ func (c *RPCClient) IsRoomEncrypted(t ct.TestLike, roomID string) (bool, error) 
 }
 
 // SendMessage tries to send the message, but can fail.
-func (c *RPCClient) SendMessage(t ct.TestLike, roomID, text string) (eventID string, err error) {
+func (c *RPCClient) SendMessage(t ct.TestLike, roomID, text string, timeout ...time.Duration) (eventID string, err error) {
+	var to time.Duration
+	if len(timeout) > 0 {
+		to = timeout[0]
+	}
 	err = c.client.Call("Server.SendMessage", RPCSendMessage{
 		TestName: t.Name(),
 		RoomID:   roomID,
 		Text:     text,
+		Timeout:  to,
 	}, &eventID)
 	return
 }

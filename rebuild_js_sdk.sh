@@ -17,7 +17,9 @@ then
     exit 1
 fi
 
-corepack enable
-(cd ./internal/api/js/js-sdk && yarn add $1 && yarn install && yarn build)
+# Invoke Yarn through Corepack directly instead of installing global shims. This
+# works for unprivileged users too: `corepack enable` otherwise needs write
+# access to the system Yarn location (for example, /usr/bin on Arch Linux).
+(cd ./internal/api/js/js-sdk && corepack yarn add "$1" && corepack yarn install && corepack yarn build)
 rm -rf ./internal/api/js/chrome/dist || echo 'no dist directory detected';
 cp -r ./internal/api/js/js-sdk/dist/. ./internal/api/js/chrome/dist
