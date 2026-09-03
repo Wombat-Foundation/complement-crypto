@@ -198,7 +198,11 @@ func TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 			// On matrix-rust-sdk, Backpaginate returns before the event is actually added to the timeline,
 			// which happens asynchronously
 			waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(evID))
-			waiter.Waitf(t, 1*time.Second, "Bob did not see Alice's message %s", evID)
+			// 1s here is too tight: Backpaginate above returns before the event is actually
+			// added to the timeline (per the comment above), so this is a genuine async race,
+			// not a fixed-cost operation - under load a 1s budget flakes even though the event
+			// arrives shortly after. Match the 5s budget used by every other waiter in this test.
+			waiter.Waitf(t, 5*time.Second, "Bob did not see Alice's message %s", evID)
 
 			ev := bob.MustGetEvent(t, roomID, evID)
 			must.NotEqual(t, ev.Text, onlyAliceBody, "bob was able to decrypt a message from before he was joined")

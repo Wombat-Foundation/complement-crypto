@@ -185,8 +185,11 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 		}, func(bob api.TestClient) {
 			// we can't rely on MustStartSyncing returning to know that the room key has been received, as
 			// in rust we just wait for RoomListLoadingStateLoaded which is a separate connection to the
-			// encryption loop.
-			time.Sleep(time.Second)
+			// encryption loop. A fixed sleep here is a race under load: if the host is busy, this
+			// client may not have finished syncing/decrypting the kick message in time, causing a
+			// spurious MustGetEvent failure ("Item with given event ID not found") rather than the
+			// real assertions below ever running. Wait for the event to actually be visible instead.
+			bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(eventID)).Waitf(t, 20*time.Second, "did not see event %s", eventID)
 			ev := bob.MustGetEvent(t, roomID, eventID)
 			must.Equal(t, ev.FailedToDecrypt, false, "unable to decrypt message")
 			must.Equal(t, ev.Text, "Kick to make a new room key!", "event text mismatch")
@@ -549,14 +552,18 @@ func TestToDeviceMessagesAreProcessedInOrder(t *testing.T) {
 				alice.MustStartSyncing(t)
 
 				lastTimelineEvent := timelineEvents[len(timelineEvents)-1]
+				// This is Alice's first subscription to this room's timeline - her /sync was
+				// blocked for the entire burst above, so she never processed a single response
+				// during it. Set up the listener (and implicitly SubscribeToRoom) before waiting,
+				// so any events the listener picks up are captured.
+				waiter := alice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(lastTimelineEvent.ID))
 				// Her restarted sync starts from a fresh position, so the burst that happened while
 				// she was blocked won't be in her initial window either - explicitly backpaginate to
 				// pull it in.
-				waiter := alice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(lastTimelineEvent.ID))
 				if err := alice.Backpaginate(t, roomID, len(timelineEvents)); err != nil {
 					t.Logf("Backpaginate: %s (continuing - the event may already be visible)", err)
 				}
-				waiter.Waitf(t, 60*time.Second, "did not see latest timeline event %s", lastTimelineEvent.ID)
+				waiter.Waitf(t, 30*time.Second, "did not see latest timeline event %s", lastTimelineEvent.ID)
 				// now verify we can decrypt all the events
 				time.Sleep(10 * time.Second)
 				// backpaginate 10 times. We don't do a single huge backpagination call because
