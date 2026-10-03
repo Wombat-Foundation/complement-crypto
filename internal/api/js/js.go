@@ -669,7 +669,10 @@ func (c *JSClient) StartSyncing(t ct.TestLike) (stopSyncing func(), err error) {
 				window.__client.retryImmediately();
 			}
 		}, 250);
-		const retryCap = setTimeout(stopRetrying, 10000);
+		// Match the 5s budget the Go side of StartSyncing waits below: once the
+		// caller gives up it tears the client down, so keep waking /sync for at
+		// most as long as it is still listening rather than 10s into teardown.
+		const retryCap = setTimeout(stopRetrying, 5000);
 		function stopRetrying() {
 			clearInterval(retryTimer);
 			clearTimeout(retryCap);

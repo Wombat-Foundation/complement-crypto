@@ -5,7 +5,7 @@ JS_SDK_VERSION=$1
 
 if [ -z "$JS_SDK_VERSION" ] || [ "$JS_SDK_VERSION" = "-h" ] || [ "$JS_SDK_VERSION" = "--help" ];
 then
-    echo "Rebuild the version of JS SDK used. (requires on PATH: yarn)"
+    echo "Rebuild the version of JS SDK used. (requires on PATH: corepack, which provides yarn)"
     echo "Usage: $0 [version]"
     echo "  [version]: the yarn/npm package to use. This is fed directly into 'yarn add' so branches/commits can be used"
     echo ""
@@ -14,6 +14,13 @@ then
     echo "  Install develop branch:        $0 matrix-js-sdk@https://github.com/matrix-org/matrix-js-sdk#develop"
     echo "  Install specific commit:       $0 matrix-js-sdk@https://github.com/matrix-org/matrix-js-sdk#36c958642cda08d32bc19c2303ebdfca470d03c1"
     echo "  Install from a local checkout: $0 matrix-js-sdk@file:/path/to/local/js/sdk"
+    exit 1
+fi
+
+# Fail early with a clear message rather than "corepack: command not found"
+# halfway through the rebuild (some Node distributions ship without corepack).
+if ! command -v corepack >/dev/null 2>&1; then
+    echo "error: corepack not found on PATH, it is required to run yarn" >&2
     exit 1
 fi
 
