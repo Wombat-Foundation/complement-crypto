@@ -658,7 +658,29 @@ func (c *JSClient) StartSyncing(t ct.TestLike) (stopSyncing func(), err error) {
 			close(ch)
 		}
 	})
-	chrome.RunAsyncFn[chrome.Void](t, c.browser.Ctx, `await window.__client.startClient({});`)
+	chrome.RunAsyncFn[chrome.Void](t, c.browser.Ctx, `
+		// startClient() does not cancel the SDK's reconnect backoff after a
+		// deliberate /sync failure storm. Keep waking a pending keep-alive until
+		// the client is actually syncing, rather than racing startup registration.
+		const retryTimer = setInterval(() => {
+			if (window.__client.getSyncState() === "SYNCING") {
+				stopRetrying();
+			} else {
+				window.__client.retryImmediately();
+			}
+		}, 250);
+		const retryCap = setTimeout(stopRetrying, 10000);
+		function stopRetrying() {
+			clearInterval(retryTimer);
+			clearTimeout(retryCap);
+		}
+		try {
+			await window.__client.startClient({});
+		} catch (e) {
+			stopRetrying();
+			throw e;
+		}
+	`)
 	select {
 	case <-time.After(5 * time.Second):
 		return nil, fmt.Errorf("[%s](js) took >5s to StartSyncing", c.userID)
