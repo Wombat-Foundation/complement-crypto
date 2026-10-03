@@ -508,19 +508,14 @@ func (c *JSClient) InviteUser(t ct.TestLike, roomID, userID string) error {
 		// matrix-js-sdk#4291: the crypto layer only learns about new members from
 		// processed /sync responses, not from the /invite call itself. If /sync is
 		// delayed (as in TestDelayedInviteResponse), Alice encrypts without Bob.
-		// Refresh the room member list (the SDK's intended post-invite path), then
-		// pass the real RoomMember to RustCrypto before allowing encryption.
-		const room = window.__client.getRoom("`, roomID, `");
-		if (room) {
-			await room.clearLoadedMembersIfNeeded();
-			await room.loadMembersIfNeeded();
-		}
+		// This is a Complement-only workaround for the SDK gap: notify the crypto
+		// backend directly because the membership event may still be delayed in
+		// /sync. The duck-typed values match the fields used by onRoomMembership.
 		const crypto = window.__client.getCrypto();
 		if (crypto && typeof crypto.onRoomMembership === "function") {
-			const member = room && room.getMember("`, userID, `");
 			crypto.onRoomMembership(
 				{ getRoomId: () => "`, roomID, `" },
-				member || { userId: "`, userID, `", membership: "invite" },
+				{ userId: "`, userID, `", membership: "invite" },
 			);
 			// onRoomMembership starts tracking asynchronously. Force the device list
 			// request and await it before allowing the caller to encrypt.
