@@ -511,7 +511,7 @@ func (c *JSClient) InviteUser(t ct.TestLike, roomID, userID string) error {
 		// Replicate what RoomEncryptor.onRoomMembership does on /sync delivery:
 		// pass a duck-typed fake event and member directly to the RustCrypto
 		// instance so it starts tracking Bob's devices immediately.
-		const crypto = window.__client.cryptoBackend;
+		const crypto = window.__client.getCrypto();
 		if (crypto && typeof crypto.onRoomMembership === "function") {
 			crypto.onRoomMembership(
 				{ getRoomId: () => "`, roomID, `" },
