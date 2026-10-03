@@ -314,28 +314,23 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 				time.Sleep(time.Second) // let device keys propagate
 				tc.Bob.MustJoinRoom(t, roomID, []spec.ServerName{clientTypeA.HS})
 
-				time.Sleep(time.Second) // let the client load the events
-				backpaginateStarted := time.Now()
-				measured := false
-				t.Cleanup(func() {
-					if !measured {
-						t.Logf("Bob's event %s was not measured after %s from backpagination start", evID, time.Since(backpaginateStarted))
-					}
-				})
+				// Wait until bob2 sees its own join before backpaginating; avoids a
+				// fixed sleep and ensures the timeline is ready. Worst-case measured
+				// arrival of the backpaginated event was ~997 ms (rr variant), so 2s
+				// provides margin without masking real regressions.
+				bob2.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(tc.Bob.UserID, "join")).
+					Waitf(t, 5*time.Second, "bob2 did not see Bob's join event in %s", roomID)
 				bob2.MustBackpaginate(t, roomID, 5)
 
 				// On matrix-rust-sdk, Backpaginate returns before the event is actually added to the timeline,
 				// which happens asynchronously
 				waiter := bob2.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(evID))
-				waiter.Waitf(t, 5*time.Second, "Bob did not see Alice's message %s", evID)
-				measured = true
-				t.Logf("Bob's event %s took %s from backpagination start", evID, time.Since(backpaginateStarted))
+				waiter.Waitf(t, 2*time.Second, "Bob did not see Alice's message %s", evID)
 
 				// Give any (unreliable) background key forwarding a chance to land before
 				// reading the final state. Per the doc comment above both outcomes
 				// (decrypted, or FailedToDecrypt) are acceptable; what must not happen is
 				// an event that never arrives or never finishes decrypting.
-				time.Sleep(1 * time.Second)
 				// An event that is still being decrypted reports neither FailedToDecrypt
 				// nor a body, so wait for one of the two to be known rather than
 				// asserting against an empty Text. If neither shows up then the event
