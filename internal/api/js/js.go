@@ -505,6 +505,19 @@ func (c *JSClient) Opts() api.ClientCreationOpts {
 func (c *JSClient) InviteUser(t ct.TestLike, roomID, userID string) error {
 	_, err := chrome.RunAsyncFn[chrome.Void](t, c.browser.Ctx, fmt.Sprint(`
 		await window.__client.invite("`, roomID, `","`, userID, `");
+		// matrix-js-sdk#4291: the crypto layer only learns about new members from
+		// processed /sync responses, not from the /invite call itself. If /sync is
+		// delayed (as in TestDelayedInviteResponse), Alice encrypts without Bob.
+		// Replicate what RoomEncryptor.onRoomMembership does on /sync delivery:
+		// pass a duck-typed fake event and member directly to the RustCrypto
+		// instance so it starts tracking Bob's devices immediately.
+		const crypto = window.__client.cryptoBackend;
+		if (crypto && typeof crypto.onRoomMembership === "function") {
+			crypto.onRoomMembership(
+				{ getRoomId: () => "`, roomID, `" },
+				{ userId: "`, userID, `", membership: "invite" },
+			);
+		}
 	`))
 	return err
 }
