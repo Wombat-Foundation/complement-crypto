@@ -20,6 +20,12 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+// Body of the message Alice sends to force a room key rotation
+// (rotation_period_msgs=1) in TestUnprocessedToDeviceMessagesArentLostOnRestart.
+// It is also what the restarted Bob client must be able to decrypt afterwards,
+// so every assertion on it reads from here rather than repeating the string.
+const kickMsgBody = "Kick to make a new room key!"
+
 // Test that if a client is unable to call /sendToDevice, it retries.
 func TestClientRetriesSendToDevice(t *testing.T) {
 	Instance().ClientTypeMatrix(t, func(t *testing.T, clientTypeA, clientTypeB api.ClientType) {
@@ -117,7 +123,7 @@ func TestUnprocessedToDeviceMessagesArentLostOnRestart(t *testing.T) {
 			t.Logf("to-device msgs sent")
 
 			// send a message as alice to make a new room key
-			eventID := alice.MustSendMessage(t, roomID, "Kick to make a new room key!")
+			eventID := alice.MustSendMessage(t, roomID, kickMsgBody)
 
 			// client specific impls to handle restarts.
 			switch clientType.Lang {
@@ -184,17 +190,22 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 						// takes. The room key in that response is what lets this
 						// client decrypt the message Alice sent while it was offline,
 						// so a decrypted copy of that event is direct evidence the key
-						// was processed before we SIGKILL the client.
+						// was processed.
 						waiter := remoteClient.WaitUntilEventInRoom(t, roomID, func(e api.Event) bool {
-							return e.ID == eventID && !e.FailedToDecrypt && e.Text == "Kick to make a new room key!"
+							return e.ID == eventID && !e.FailedToDecrypt && e.Text == kickMsgBody
 						})
 						if err := waiter.TryWaitf(t, 10*time.Second, "remote client did not decrypt %s after the room key was forwarded", eventID); err != nil {
 							// Retrying decryption for a late-arriving room key is
-							// best-effort, so don't turn its absence into a failure:
-							// the SDK has still had longer than the previous fixed 5s
-							// sleep to process + persist the key by this point.
-							t.Logf("%s", err)
+							// best-effort (and this response need not be the one that
+							// carried the timeline event), so log rather than fail:
+							// phase3 below is what actually asserts on decryption.
+							t.Logf("room key not observed in %s before kill: %s", eventID, err)
 						}
+						// The timeline only proves the key was processed in memory.
+						// Give the crypto store a moment to finish its SQLite WAL
+						// commit before the SIGKILL, or the key can be lost - the
+						// exact flake this test exists to catch.
+						time.Sleep(time.Second)
 						t.Logf("killing remote bob client")
 						remoteClient.ForceClose(t)
 						goto phase3
@@ -222,7 +233,7 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 			bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(eventID)).Waitf(t, 20*time.Second, "did not see event %s", eventID)
 			ev := bob.MustGetEvent(t, roomID, eventID)
 			must.Equal(t, ev.FailedToDecrypt, false, "unable to decrypt message")
-			must.Equal(t, ev.Text, "Kick to make a new room key!", "event text mismatch")
+			must.Equal(t, ev.Text, kickMsgBody, "event text mismatch")
 		})
 	})
 }
@@ -284,7 +295,7 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartJS(t *testing.T, tc *cc.Te
 			time.Sleep(time.Second)
 			ev := bob.MustGetEvent(t, roomID, eventID)
 			must.Equal(t, ev.FailedToDecrypt, false, "unable to decrypt message")
-			must.Equal(t, ev.Text, "Kick to make a new room key!", "event text mismatch")
+			must.Equal(t, ev.Text, kickMsgBody, "event text mismatch")
 		})
 	})
 }
