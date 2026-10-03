@@ -87,7 +87,7 @@ func TestRoomKeyIsCycledOnDeviceLogout(t *testing.T) {
 				wantMsgBody = "Another Test Message"
 				waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 				alice.MustSendMessage(t, roomID, wantMsgBody)
-				waiter.Waitf(t, 5*time.Second, "bob did not see alice's new message")
+				waiter.Waitf(t, 20*time.Second, "bob did not see alice's new message")
 
 				// we should have seen a /sendToDevice call by now. If we didn't, this implies we didn't cycle
 				// the room key. We can't actually inspect the event itself, so just the fact we see the

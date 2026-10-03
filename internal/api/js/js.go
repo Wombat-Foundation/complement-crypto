@@ -517,6 +517,11 @@ func (c *JSClient) InviteUser(t ct.TestLike, roomID, userID string) error {
 				{ getRoomId: () => "`, roomID, `" },
 				{ userId: "`, userID, `", membership: "invite" },
 			);
+			// onRoomMembership starts tracking asynchronously. Force the device list
+			// request and await it before allowing the caller to encrypt.
+			if (typeof crypto.getUserDeviceInfo === "function") {
+				await crypto.getUserDeviceInfo(["`, userID, `"], true);
+			}
 		}
 	`))
 	return err
