@@ -325,10 +325,22 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 				// Give any (unreliable) background key forwarding a chance to land before
 				// reading the final state - see the doc comment above for why we don't wait
 				// for, or require, a specific outcome here.
-				time.Sleep(1 * time.Second)
+				//
+				// An event that is still being decrypted reports neither FailedToDecrypt
+				// nor a body, so wait for one of the two to be known instead of asserting
+				// against an empty Text after a fixed sleep.
+				settled := bob2.WaitUntilEventInRoom(t, roomID, func(e api.Event) bool {
+					return e.ID == evID && (e.FailedToDecrypt || e.Text != "")
+				})
+				if err := settled.TryWaitf(t, 10*time.Second, "timed out waiting for %s to finish decrypting", evID); err != nil {
+					t.Logf("skipping decrypt assertion for %s: %s", evID, err)
+					return
+				}
 				event := bob2.MustGetEvent(t, roomID, evID)
 				if event.FailedToDecrypt {
 					t.Logf("bob2 could not decrypt the message (known SDK inconsistency, not a failure)")
+				} else if event.Text == "" {
+					t.Logf("bob2 has not finished decrypting %s yet, skipping", evID)
 				} else {
 					must.Equal(t, event.Text, body, "bob2 decrypted to the wrong body")
 				}

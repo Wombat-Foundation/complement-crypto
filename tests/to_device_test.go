@@ -179,11 +179,22 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 						// the response body, parse it, decrypt the Olm envelope, and
 						// persist the Megolm session to SQLite.
 						activeChannel.Send(t, nil)
-						// Wait for the SDK to finish processing + persisting. Because
-						// Send() returned, we know the SDK has the response in-flight.
-						// A 5s budget covers parsing 60+ to-device events, Olm decrypt,
-						// and SQLite WAL commit even under heavy host load.
-						time.Sleep(5 * time.Second)
+						// Wait for the SDK to actually apply the response we just
+						// forwarded instead of sleeping and guessing how long that
+						// takes. The room key in that response is what lets this
+						// client decrypt the message Alice sent while it was offline,
+						// so a decrypted copy of that event is direct evidence the key
+						// was processed before we SIGKILL the client.
+						waiter := remoteClient.WaitUntilEventInRoom(t, roomID, func(e api.Event) bool {
+							return e.ID == eventID && !e.FailedToDecrypt && e.Text == "Kick to make a new room key!"
+						})
+						if err := waiter.TryWaitf(t, 10*time.Second, "remote client did not decrypt %s after the room key was forwarded", eventID); err != nil {
+							// Retrying decryption for a late-arriving room key is
+							// best-effort, so don't turn its absence into a failure:
+							// the SDK has still had longer than the previous fixed 5s
+							// sleep to process + persist the key by this point.
+							t.Logf("%s", err)
+						}
 						t.Logf("killing remote bob client")
 						remoteClient.ForceClose(t)
 						goto phase3
