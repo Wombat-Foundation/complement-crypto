@@ -320,7 +320,9 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 				// On matrix-rust-sdk, Backpaginate returns before the event is actually added to the timeline,
 				// which happens asynchronously
 				waiter := bob2.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(evID))
-				waiter.Waitf(t, 1*time.Second, "Bob did not see Alice's message %s", evID)
+				// Backpagination and timeline insertion are asynchronous. Under the
+				// full client matrix, one second is not enough for the event to land.
+				waiter.Waitf(t, 5*time.Second, "Bob did not see Alice's message %s", evID)
 
 				// Give any (unreliable) background key forwarding a chance to land before
 				// reading the final state. Per the doc comment above both outcomes
