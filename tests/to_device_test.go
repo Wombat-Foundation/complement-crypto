@@ -200,12 +200,18 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 							// carried the timeline event), so log rather than fail:
 							// phase3 below is what actually asserts on decryption.
 							t.Logf("room key not observed in %s before kill: %s", eventID, err)
+							// With no signal we have no idea how far the SDK got, so
+							// fall back to the budget the old unconditional sleep gave:
+							// parse 60+ to-device events, Olm decrypt, SQLite WAL
+							// commit, even under heavy host load.
+							time.Sleep(5 * time.Second)
+						} else {
+							// The timeline only proves the key was processed in memory.
+							// Give the crypto store a moment to finish its SQLite WAL
+							// commit before the SIGKILL, or the key can be lost - the
+							// exact flake this test exists to catch.
+							time.Sleep(time.Second)
 						}
-						// The timeline only proves the key was processed in memory.
-						// Give the crypto store a moment to finish its SQLite WAL
-						// commit before the SIGKILL, or the key can be lost - the
-						// exact flake this test exists to catch.
-						time.Sleep(time.Second)
 						t.Logf("killing remote bob client")
 						remoteClient.ForceClose(t)
 						goto phase3

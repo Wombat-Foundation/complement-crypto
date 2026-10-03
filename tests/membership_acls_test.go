@@ -323,8 +323,9 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 				waiter.Waitf(t, 1*time.Second, "Bob did not see Alice's message %s", evID)
 
 				// Give any (unreliable) background key forwarding a chance to land before
-				// reading the final state - see the doc comment above for why we don't wait
-				// for, or require, a specific outcome here.
+				// reading the final state. Per the doc comment above both outcomes
+				// (decrypted, or FailedToDecrypt) are acceptable; what must not happen is
+				// an event that never arrives or never finishes decrypting.
 				time.Sleep(1 * time.Second)
 				// An event that is still being decrypted reports neither FailedToDecrypt
 				// nor a body, so wait for one of the two to be known rather than
