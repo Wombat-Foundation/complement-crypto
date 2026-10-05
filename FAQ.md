@@ -168,22 +168,21 @@ If you want to try out changes within a local `matrix-js-sdk`:
     in), so a relative path resolves somewhere else, and to a different place
     depending on how deeply this repo is nested.
 
-    A bare `just rebuild-js-sdk` reads the spec from the `LOCAL_JS_SDK`
-    environment variable or `.env` entry, and errors if it is unset:
+    A bare `just rebuild-js-sdk` defaults to the pinned Wombat-Foundation fork
+    on GitLab, so it is safe to run without arguments. To test a local checkout
+    instead, pass the spec as an argument or via the `LOCAL_JS_SDK` environment
+    variable / `.env` entry:
 
     ```
     echo 'LOCAL_JS_SDK=matrix-js-sdk@file:/abs/path/to/matrix-js-sdk' >> .env
     just rebuild-js-sdk
     ```
 
-4. This rewrites `internal/api/js/js-sdk/package.json` and `yarn.lock` to point
-   at your local path. Don't commit those: CI resolves `matrix-js-sdk` from the
-   pinned fork commit in `package.json`, and a `file:` path won't exist there.
-   Restore them when you're done:
-
-    ```
-    git checkout internal/api/js/js-sdk/package.json internal/api/js/js-sdk/yarn.lock
-    ```
+4. A `file:` spec only affects the built bundle: `rebuild_js_sdk.sh` snapshots
+   `internal/api/js/js-sdk/package.json` and `yarn.lock` before `yarn add` and
+   restores them afterwards, so no local path is ever left in version control.
+   The committed manifests stay pinned to the GitLab fork commit, which is what
+   CI resolves.
 
 #### Using your local matrix-rust-sdk-crypto-wasm and matrix-rust-sdk
 
