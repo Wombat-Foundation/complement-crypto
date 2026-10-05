@@ -225,7 +225,6 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 		// Don't block /sync responses now; the new client below must be able to sync.
 		activeChannel.Close()
 
-
 		// Ensure Bob can decrypt new messages sent from Alice.
 		tc.WithClientSyncing(t, &cc.ClientCreationRequest{
 			User: tc.Bob,

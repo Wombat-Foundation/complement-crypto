@@ -313,31 +313,36 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 				time.Sleep(time.Second) // let device keys propagate
 				tc.Bob.MustJoinRoom(t, roomID, []spec.ServerName{clientTypeA.HS})
 
-				// Don't wait on bob2's own join event instead: on JS the waiter only inspects the live
-				// timeline, and after an initial sync the join can arrive as state, never appearing there.
-				time.Sleep(time.Second) // let the client load the events
-				bob2.MustBackpaginate(t, roomID, 5)
-
-				// On matrix-rust-sdk, Backpaginate returns before the event is actually added to the timeline,
-				// which happens asynchronously
-				waiter := bob2.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(evID))
-				waiter.Waitf(t, 5*time.Second, "Bob did not see Alice's message %s", evID)
-
-				// Give any (unreliable) background key forwarding a chance to land before
-				// reading the final state. Per the doc comment above both outcomes
-				// (decrypted, or FailedToDecrypt) are acceptable; what must not happen is
-				// an event that never arrives or never finishes decrypting.
-				// An event that is still being decrypted reports neither FailedToDecrypt
-				// nor a body, so wait for one of the two to be known rather than
-				// asserting against an empty Text. If neither shows up then the event
-				// never made it into bob2's timeline: fail, as MustGetEvent would have.
-				settled := bob2.WaitUntilEventInRoom(t, roomID, func(e api.Event) bool {
-					return e.ID == evID && (e.FailedToDecrypt || e.Text != "")
-				})
-				if err := settled.TryWaitf(t, 10*time.Second, "timed out waiting for %s to finish decrypting", evID); err != nil {
-					t.Fatalf("event %s never settled in bob2's timeline: %s", evID, err)
+				// Poll rather than sleep. Each attempt backpaginates (which errors cleanly while the
+				// client doesn't know the room yet, unlike GetEvent which can crash on rust) and then
+				// reads the event once the timeline exists. Don't wait on bob2's own join event
+				// instead: the JS waiter only inspects the live timeline, and after an initial sync
+				// the join can arrive as state, never appearing there.
+				//
+				// Backpaginate can return before the event is added to the timeline (rust does this
+				// asynchronously), and an event still being decrypted reports neither
+				// FailedToDecrypt nor a body, so only stop once one of the two is known. Per the doc
+				// comment above both outcomes are acceptable; what must not happen is an event that
+				// never arrives or never finishes decrypting.
+				var event *api.Event
+				deadline := time.Now().Add(20 * time.Second)
+				var lastErr error
+				for {
+					if lastErr = bob2.Backpaginate(t, roomID, 5); lastErr == nil {
+						var ev *api.Event
+						if ev, lastErr = bob2.GetEvent(t, roomID, evID); lastErr == nil {
+							if ev.FailedToDecrypt || ev.Text != "" {
+								event = ev
+								break
+							}
+							lastErr = fmt.Errorf("event %s present but not yet decrypted or failed", evID)
+						}
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("bob2 never settled on event %s within 20s: %s", evID, lastErr)
+					}
+					time.Sleep(250 * time.Millisecond)
 				}
-				event := bob2.MustGetEvent(t, roomID, evID)
 				if event.FailedToDecrypt {
 					t.Skipf("bob2 could not decrypt the pre-join message: known SDK inconsistency in key forwarding to new devices")
 				}
