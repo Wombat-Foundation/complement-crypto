@@ -11,7 +11,7 @@
   "dependencies": {
     "buffer": "^6.0.3",
     "matrix-js-sdk": "https://gitlab.com/Wombat-Foundation/matrix-js-sdk#b7578eb2f68872a3ea4ffcaa80cd49ee9f4d901f",
-    "vite": "^6.4.2"
+    "vite": "^6.4.3"
   },
   "packageManager": "yarn@1.22.22"
 }

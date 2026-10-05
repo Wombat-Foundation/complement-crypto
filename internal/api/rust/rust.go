@@ -106,6 +106,7 @@ func NewRustClient(t ct.TestLike, opts api.ClientCreationOpts) (api.Client, erro
 		t.Logf("setting cross process store locks holder name=%s", xprocessName)
 		ab = ab.CrossProcessLockConfig(matrix_sdk_ffi.CrossProcessLockConfigMultiProcess{xprocessName})
 	}
+
 	// @alice:hs1, FOOBAR => alice_hs1_FOOBAR
 	username := strings.Replace(opts.UserID[1:], ":", "_", -1) + "_" + opts.DeviceID
 
@@ -582,7 +583,7 @@ func (c *RustClient) SubscribeToRoom(t ct.TestLike, roomID string) error {
 	if c.syncService == nil {
 		return fmt.Errorf("cannot subscribe to room %s: StartSyncing not yet called", roomID)
 	}
-	if err := c.syncService.RoomListService().SubscribeToRooms([]string{roomID}); err != nil {
+	if err := c.syncService.RoomListService().SetRoomSubscriptions([]string{roomID}); err != nil {
 		return fmt.Errorf("cannot subscribe to room %s: %s", roomID, err)
 	}
 	return nil
