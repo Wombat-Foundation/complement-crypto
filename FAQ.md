@@ -160,15 +160,21 @@ If you want to try out changes within a local `matrix-js-sdk`:
 3. Rebuild the JS SDK used by the tests:
 
     ```
-    just rebuild-js-sdk matrix-js-sdk@file:../path/to/matrix-js-sdk
+    just rebuild-js-sdk matrix-js-sdk@file:/abs/path/to/matrix-js-sdk
     ```
 
-    Note the `file:` path is resolved by yarn relative to
+    Use an absolute path. `file:` is resolved by yarn relative to
     `internal/api/js/js-sdk` (the directory `rebuild_js_sdk.sh` runs `yarn add`
-    in), not relative to the complement-crypto root. An absolute path is easier
-    to reason about. If your checkout is a sibling of this repo, the justfile
-    default resolves correctly and a bare `just rebuild-js-sdk` does the right
-    thing; override it with `LOCAL_JS_SDK=...` (env or `.env`) if not.
+    in), so a relative path resolves somewhere else, and to a different place
+    depending on how deeply this repo is nested.
+
+    A bare `just rebuild-js-sdk` reads the spec from the `LOCAL_JS_SDK`
+    environment variable or `.env` entry, and errors if it is unset:
+
+    ```
+    echo 'LOCAL_JS_SDK=matrix-js-sdk@file:/abs/path/to/matrix-js-sdk' >> .env
+    just rebuild-js-sdk
+    ```
 
 4. This rewrites `internal/api/js/js-sdk/package.json` and `yarn.lock` to point
    at your local path. Don't commit those: CI resolves `matrix-js-sdk` from the

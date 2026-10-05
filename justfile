@@ -5,13 +5,6 @@ set dotenv-load
 BASE_IMAGE := "ghcr.io/matrix-org/synapse-service:v1.117.0"
 COMPLEMENT_DIR := justfile_directory()
 
-# Default `yarn add` target for the `rebuild-js-sdk` recipe, pointing at a local
-# matrix-js-sdk checkout. Note that `file:` paths are resolved by yarn relative to
-# internal/api/js/js-sdk (where `yarn add` runs), not relative to this justfile --
-# hence the long ../../../../../ prefix. Override per-invocation with an argument,
-# or machine-wide via the LOCAL_JS_SDK environment variable / .env entry.
-LOCAL_JS_SDK := env_var_or_default("LOCAL_JS_SDK", "matrix-js-sdk@file:../../../../../matrix-js-sdk")
-
 # Replace the `install-uniffi-bindgen` recipe with this once uniffi-bindgen-go
 # gets a release with Uniffi 0.32 support.
 # cargo install uniffi-bindgen-go --tag {{ UNIFFI_GO_VERSION }} --git https://github.com/NordSecurity/uniffi-bindgen-go
@@ -64,8 +57,19 @@ _build-rust-sdk dir:
     uniffi-bindgen-go -o {{ COMPLEMENT_DIR }}/internal/api/rust --config {{ COMPLEMENT_DIR }}/uniffi.toml --library ./target/debug/libmatrix_sdk_ffi.a
 
 
-# Rebuild the version of matrix-js-sdk used. The version is fed to `yarn add`, e.g. `matrix-js-sdk@file:/path/to/checkout`. (requires on PATH: corepack)
-rebuild-js-sdk js-sdk-version=LOCAL_JS_SDK:
+# Rebuild the version of matrix-js-sdk used. The version is fed to `yarn add`.
+#
+# The spec is required, and any `file:` path must be absolute: yarn resolves
+# `file:` against internal/api/js/js-sdk, so a relative path silently resolves
+# somewhere else, differently depending on nesting depth. Default to the
+# LOCAL_JS_SDK environment variable / .env entry, or pass it as an argument:
+#
+#   LOCAL_JS_SDK='matrix-js-sdk@file:/abs/path/to/matrix-js-sdk' just rebuild-js-sdk
+#   just rebuild-js-sdk 'matrix-js-sdk@https://host/repo#<sha>'
+#
+# The default is evaluated lazily, so a missing LOCAL_JS_SDK only errors when
+# this recipe runs. (requires on PATH: corepack)
+rebuild-js-sdk js-sdk-version=env_var("LOCAL_JS_SDK"):
     ./rebuild_js_sdk.sh {{ quote(js-sdk-version) }}
 
 # Add the cgo LDFLAGS directive to the generated bindings.
