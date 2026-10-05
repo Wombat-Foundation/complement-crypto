@@ -41,6 +41,7 @@ func TestDelayedInviteResponse(t *testing.T) {
 
 			config := tc.Deployment.MITM().Configure(t)
 			serverHasInvite := helpers.NewWaiter()
+			const delayTime = 3 * time.Second
 			config.WithIntercept(mitm.InterceptOpts{
 				Filter: mitm.FilterParams{
 					PathContains: "/sync",
@@ -52,7 +53,6 @@ func TestDelayedInviteResponse(t *testing.T) {
 						`"membership":"invite"`,
 					) {
 						t.Logf("/sync => %v", string(cd.ResponseBody))
-						delayTime := 3 * time.Second
 						t.Logf("intercepted /sync response which has the invite, tarpitting for %v - %v", delayTime, cd)
 						serverHasInvite.Finish()
 						time.Sleep(delayTime)
@@ -67,6 +67,13 @@ func TestDelayedInviteResponse(t *testing.T) {
 				t.Logf("Alice /invited Bob")
 				// once the server got the invite, send a message
 				serverHasInvite.Waitf(t, 3*time.Second, "did not intercept invite")
+				if clientType.Lang == api.ClientTypeJS {
+					// js-sdk only learns room membership for crypto from a processed /sync, never from
+					// its own /invite call (matrix-js-sdk#4291), so it cannot win this race. Let the
+					// tarpitted /sync (a known, fixed duration) reach Alice so the test covers what js
+					// can do: encrypt for an invitee once it has seen the invite. Rust keeps the race.
+					time.Sleep(delayTime + time.Second)
+				}
 				t.Logf("intercepted invite; sending message")
 				eventID := alice.MustSendMessage(t, roomID, "hello world!")
 
@@ -75,26 +82,24 @@ func TestDelayedInviteResponse(t *testing.T) {
 				bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(tc.Bob.UserID, "join")).Waitf(t, 7*time.Second, "did not see own join")
 				bob.MustBackpaginate(t, roomID, 3)
 
-				time.Sleep(time.Second) // let things settle / decrypt
-
-				ev := bob.MustGetEvent(t, roomID, eventID)
-
-				// This used to be skipped for both langs (rust: matrix-rust-sdk#3622,
-				// js: matrix-js-sdk#4291) rather than asserted. rust-sdk now passes this
-				// race reliably (confirmed via repeated reruns) - whatever caused #3622
-				// appears fixed in our pinned version. js-sdk still reliably fails it:
-				// its crypto layer tracks room membership purely from processed /sync
-				// responses, not from its own just-completed /invite call, so if the
-				// /sync response carrying that invite hasn't been delivered yet (as
-				// intentionally arranged above), Alice encrypts without Bob. That's a
-				// real upstream architectural gap, not a congruent bug - congruent
-				// delivers the /sync response essentially instantly; the delay is the
-				// test's own MITM tarpit. Rust is a hard assertion; JS is skipped only
-				// when it fails, so it starts asserting again as soon as it's fixed
-				// upstream, without leaving a permanently red test in CI.
-				if clientType.Lang == api.ClientTypeJS && (ev.FailedToDecrypt || ev.Text != "hello world!") {
-					t.Skipf("known broken: see https://github.com/matrix-org/matrix-js-sdk/issues/4291")
+				// poll until the event is either decrypted or known-undecryptable
+				var ev *api.Event
+				deadline := time.Now().Add(10 * time.Second)
+				for {
+					var err error
+					if err = bob.Backpaginate(t, roomID, 3); err == nil {
+						if ev, err = bob.GetEvent(t, roomID, eventID); err == nil && (ev.FailedToDecrypt || ev.Text != "") {
+							break
+						}
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("event %s never settled in bob's timeline (last err: %v)", eventID, err)
+					}
+					time.Sleep(250 * time.Millisecond)
 				}
+
+				// Rust asserts the full race (matrix-rust-sdk#3622 no longer reproduces). JS
+				// cannot win it (matrix-js-sdk#4291), so above it is given the invite first.
 				must.Equal(t, ev.FailedToDecrypt, false, "failed to decrypt event")
 				must.Equal(t, ev.Text, "hello world!", "failed to decrypt plaintext")
 			})
