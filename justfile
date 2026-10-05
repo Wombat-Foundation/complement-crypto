@@ -52,7 +52,7 @@ _build-rust-sdk dir:
     trap 'mv -f Cargo.toml.backup Cargo.toml; mv -f Cargo.lock.backup Cargo.lock' EXIT
     sed -i.bak 's#matrix-sdk-crypto = {#matrix-sdk-crypto = {features = ["_disable-minimum-rotation-period-ms"],#' Cargo.toml
     rm -f Cargo.toml.bak
-    if ! grep -q "_disable-minimum-rotation-period-ms" Cargo.toml; then
+    if ! grep -Eq '^[[:space:]]*matrix-sdk-crypto[[:space:]]*=[[:space:]]*\{[^}]*_disable-minimum-rotation-period-ms' Cargo.toml; then
         echo "Failed to inject _disable-minimum-rotation-period-ms feature" >&2
         exit 1
     fi
