@@ -222,6 +222,9 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 			activeChannel.Send(t, nil)
 		}
 	phase3:
+		// Don't block /sync responses now; the new client below must be able to sync.
+		activeChannel.Close()
+
 
 		// Ensure Bob can decrypt new messages sent from Alice.
 		tc.WithClientSyncing(t, &cc.ClientCreationRequest{
@@ -608,8 +611,11 @@ func TestToDeviceMessagesAreProcessedInOrder(t *testing.T) {
 				// Her restarted sync starts from a fresh position, so the burst that happened while
 				// she was blocked won't be in her initial window either - explicitly backpaginate to
 				// pull it in.
-				if err := alice.Backpaginate(t, roomID, len(timelineEvents)); err != nil {
-					t.Logf("Backpaginate: %s (continuing - the event may already be visible)", err)
+				// Avoid a single huge backpagination which can fail on JS "Promise was collected".
+				for i := 0; i < 10; i++ {
+					if err := alice.Backpaginate(t, roomID, len(timelineEvents)/10); err != nil {
+						t.Logf("Backpaginate: %s (continuing - the event may already be visible)", err)
+					}
 				}
 				waiter.Waitf(t, 30*time.Second, "did not see latest timeline event %s", lastTimelineEvent.ID)
 				// now verify we can decrypt all the events

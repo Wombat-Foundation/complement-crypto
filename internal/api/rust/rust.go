@@ -878,7 +878,7 @@ func (c *RustClient) ensureListening(t ct.TestLike, roomID string) {
 	// window (SDK default: 20) on every subsequent poll for this room, giving
 	// real headroom so this doesn't happen in the first place - this mirrors
 	// what a real client does when a room is actually open/visible.
-	if err := c.syncService.RoomListService().SubscribeToRooms([]string{roomID}); err != nil {
+	if err := c.SubscribeToRoom(t, roomID); err != nil {
 		c.Logf(t, "[%s]ensureListening[%s] failed to subscribe to room: %s", c.userID, roomID, err)
 	}
 
