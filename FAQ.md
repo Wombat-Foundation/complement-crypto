@@ -146,7 +146,38 @@ If you want to try out changes within a local `matrix-js-sdk`:
 
     and make any changes you want to make.
 
-2. `./rebuild-js-sdk.sh ../path/to/matrix-js-sdk`
+2. Build your checkout so that it has a `lib/` directory. A `file:` install
+   copies the source tree verbatim without running the SDK's build, so
+   `matrix-js-sdk`'s `main` (`./lib/index.js`) won't resolve otherwise:
+
+    ```
+    cd ../path/to/matrix-js-sdk
+    pnpm install   # or `yarn install`; runs `prepare`, which runs the build
+    ```
+
+    Repeat this step after every change you make to the checkout.
+
+3. Rebuild the JS SDK used by the tests:
+
+    ```
+    just rebuild-js-sdk matrix-js-sdk@file:../path/to/matrix-js-sdk
+    ```
+
+    Note the `file:` path is resolved by yarn relative to
+    `internal/api/js/js-sdk` (the directory `rebuild_js_sdk.sh` runs `yarn add`
+    in), not relative to the complement-crypto root. An absolute path is easier
+    to reason about. If your checkout is a sibling of this repo, the justfile
+    default resolves correctly and a bare `just rebuild-js-sdk` does the right
+    thing; override it with `LOCAL_JS_SDK=...` (env or `.env`) if not.
+
+4. This rewrites `internal/api/js/js-sdk/package.json` and `yarn.lock` to point
+   at your local path. Don't commit those: CI resolves `matrix-js-sdk` from the
+   pinned fork commit in `package.json`, and a `file:` path won't exist there.
+   Restore them when you're done:
+
+    ```
+    git checkout internal/api/js/js-sdk/package.json internal/api/js/js-sdk/yarn.lock
+    ```
 
 #### Using your local matrix-rust-sdk-crypto-wasm and matrix-rust-sdk
 

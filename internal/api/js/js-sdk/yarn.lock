@@ -137,10 +137,10 @@
   resolved "https://registry.yarnpkg.com/@esbuild/win32-x64/-/win32-x64-0.25.12.tgz#9bdad8176be7811ad148d1f8772359041f46c6c5"
   integrity sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA==
 
-"@matrix-org/matrix-sdk-crypto-wasm@^18.4.0":
-  version "18.7.0"
-  resolved "https://registry.yarnpkg.com/@matrix-org/matrix-sdk-crypto-wasm/-/matrix-sdk-crypto-wasm-18.7.0.tgz#81cf44109b91439a57c500e960c6dac03ea77835"
-  integrity sha512-IiO8YrahwBN23iii4OBS6AUIEDZePa72bK7WN/DBjOXPc6g/wt891vn0vxmlopTahqFFOz/LErcHisdmzKVTsg==
+"@matrix-org/matrix-sdk-crypto-wasm@^18.9.0":
+  version "18.9.0"
+  resolved "https://registry.yarnpkg.com/@matrix-org/matrix-sdk-crypto-wasm/-/matrix-sdk-crypto-wasm-18.9.0.tgz#8e622beb607e0438e32cfe20991650da63313827"
+  integrity sha512-NtLzNDTEfNASBjNCTGZHuk7N0jrQhS6Zx2CM857rCHZYYh/rpbKGQNrJ7azktm4S1P5Jy3WU3nwJTGohGw26qQ==
 
 "@rollup/rollup-android-arm-eabi@4.60.4":
   version "4.60.4"
@@ -379,26 +379,25 @@ matrix-events-sdk@0.0.1:
   resolved "https://registry.yarnpkg.com/matrix-events-sdk/-/matrix-events-sdk-0.0.1.tgz#c8c38911e2cb29023b0bbac8d6f32e0de2c957dd"
   integrity sha512-1QEOsXO+bhyCroIe2/A5OwaxHvBm7EsSQ46DEDn8RBIfQwN5HWBpFvyWWR4QY0KHPPnnJdI99wgRiAl7Ad5qaA==
 
-"matrix-js-sdk@https://gitlab.com/Wombat-Foundation/matrix-js-sdk#b7578eb2f68872a3ea4ffcaa80cd49ee9f4d901f":
-  version "42.2.0"
-  resolved "https://gitlab.com/Wombat-Foundation/matrix-js-sdk#b7578eb2f68872a3ea4ffcaa80cd49ee9f4d901f"
+"matrix-js-sdk@file:../../../../../matrix-js-sdk":
+  version "42.3.0"
   dependencies:
     "@babel/runtime" "^8.0.0"
-    "@matrix-org/matrix-sdk-crypto-wasm" "^18.4.0"
+    "@matrix-org/matrix-sdk-crypto-wasm" "^18.9.0"
     another-json "^0.2.0"
     bs58 "^6.0.0"
     content-type "^3.0.0"
     loglevel "^1.9.2"
     matrix-events-sdk "0.0.1"
-    matrix-widget-api "^1.18.0"
+    matrix-widget-api "^1.19.0"
     p-retry "8"
     sdp-transform "^3.0.0"
     unhomoglyph "^1.0.6"
 
-matrix-widget-api@^1.18.0:
-  version "1.19.0"
-  resolved "https://registry.yarnpkg.com/matrix-widget-api/-/matrix-widget-api-1.19.0.tgz#77819e0307adbba972ae8178c83b77fada896e29"
-  integrity sha512-Qe7L6G1mQJphBC47/Bzp5ljPIK1UARgLiuGgS+/KmEs/eaNHkQ3+ArD0/0kvMV+d6kCGAZ9OKRqsnuPjizI+tw==
+matrix-widget-api@^1.19.0:
+  version "1.20.0"
+  resolved "https://registry.yarnpkg.com/matrix-widget-api/-/matrix-widget-api-1.20.0.tgz#83a91c633f2564dd5ed44b58c8be2f3b3b6c1437"
+  integrity sha512-qwFP37rgns7mPesM5/vvZgknzb+kvyRB5BISv5sCuBxsGMceMr+Kogf7OkjRxBXdMCPBFuf6gIuYRe5S+lpzQw==
   dependencies:
     "@types/events" "^3.0.0"
     events "^3.2.0"
