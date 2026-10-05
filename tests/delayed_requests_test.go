@@ -75,8 +75,14 @@ func TestDelayedInviteResponse(t *testing.T) {
 				bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(tc.Bob.UserID, "join")).Waitf(t, 7*time.Second, "did not see own join")
 				bob.MustBackpaginate(t, roomID, 3)
 
-				time.Sleep(time.Second) // let things settle / decrypt
-
+				// An event still being decrypted reports neither FailedToDecrypt nor a body, so wait
+				// for one of the two to be known rather than sleeping a fixed time.
+				settled := bob.WaitUntilEventInRoom(t, roomID, func(e api.Event) bool {
+					return e.ID == eventID && (e.FailedToDecrypt || e.Text != "")
+				})
+				if err := settled.TryWaitf(t, 10*time.Second, "timed out waiting for %s to finish decrypting", eventID); err != nil {
+					t.Fatalf("event %s never settled in bob's timeline: %s", eventID, err)
+				}
 				ev := bob.MustGetEvent(t, roomID, eventID)
 
 				// This used to be skipped for both langs (rust: matrix-rust-sdk#3622,
@@ -92,8 +98,9 @@ func TestDelayedInviteResponse(t *testing.T) {
 				// test's own MITM tarpit. Rust is a hard assertion; JS is skipped only
 				// when it fails, so it starts asserting again as soon as it's fixed
 				// upstream, without leaving a permanently red test in CI.
-				if clientType.Lang == api.ClientTypeJS && (ev.FailedToDecrypt || ev.Text != "hello world!") {
-					t.Skipf("known broken: see https://github.com/matrix-org/matrix-js-sdk/issues/4291")
+				if clientType.Lang == api.ClientTypeJS && ev.FailedToDecrypt {
+					// only the undecryptable case is #4291; any other mismatch (e.g. wrong plaintext) must fail below
+					t.Skipf("known broken: see https://github.com/matrix-org/matrix-js-sdk/issues/4291 (FailedToDecrypt=%v Text=%q)", ev.FailedToDecrypt, ev.Text)
 				}
 				must.Equal(t, ev.FailedToDecrypt, false, "failed to decrypt event")
 				must.Equal(t, ev.Text, "hello world!", "failed to decrypt plaintext")
