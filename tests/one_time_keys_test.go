@@ -43,7 +43,9 @@ func mustClaimFallbackKey(t *testing.T, claimer *client.CSAPI, target *cc.User) 
 		},
 	}), client.WithRetryUntil(30*time.Second, func(res *http.Response) bool {
 		result = must.ParseJSON(t, res.Body)
-		res.Body.Close()
+		if err := res.Body.Close(); err != nil {
+			t.Logf("failed to close /keys/claim response body: %s", err)
+		}
 		otks := result.Get(fmt.Sprintf(
 			"one_time_keys.%s.%s", client.GjsonEscape(target.UserID), client.GjsonEscape(target.DeviceID),
 		))
@@ -217,7 +219,9 @@ func TestFailedOneTimeKeyUploadRetries(t *testing.T) {
 					},
 				}), client.WithRetryUntil(10*time.Second, func(res *http.Response) bool {
 					jsonBody := must.ParseJSON(t, res.Body)
-					res.Body.Close()
+					if err := res.Body.Close(); err != nil {
+						t.Logf("failed to close /keys/claim response body: %s", err)
+					}
 					err := match.JSONKeyPresent(
 						fmt.Sprintf("one_time_keys.%s.%s.signed_curve25519*", tc.Alice.UserID, tc.Alice.DeviceID),
 					)(jsonBody)

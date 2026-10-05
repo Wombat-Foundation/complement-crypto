@@ -596,7 +596,8 @@ func TestToDeviceMessagesAreProcessedInOrder(t *testing.T) {
 				// unblocking, Alice's log shows zero further /sync activity at all - the loop is
 				// dead, not slow. Flipping the flag back does nothing on its own; the loop has to be
 				// explicitly restarted.
-				alice.MustStartSyncing(t)
+				// Stop the restarted loop on exit: the stop func from WithAliceSyncing only covers the dead one.
+				defer alice.MustStartSyncing(t)()
 
 				lastTimelineEvent := timelineEvents[len(timelineEvents)-1]
 				// This is Alice's first subscription to this room's timeline - her /sync was

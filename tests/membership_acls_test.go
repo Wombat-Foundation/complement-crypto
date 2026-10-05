@@ -290,9 +290,8 @@ func TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 // `history_visibility: shared` (PresetPublicChat): forwarding the room key to a newly-joined
 // device for pre-join history is not reliably implemented today - confirmed empirically,
 // neither JS nor Rust consistently decrypts within a generous wait, and either can occasionally
-// succeed depending on timing. Don't assert a specific outcome for FailedToDecrypt; only fail
-// if the event decrypts to the wrong content, which would be a real bug rather than this known
-// SDK inconsistency.
+// succeed depending on timing. If bob2 cannot decrypt, the test is skipped (not passed) so it is visibly
+// not exercised; if it does decrypt, the plaintext must be correct.
 func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 	Instance().ClientTypeMatrix(t, func(t *testing.T, clientTypeA, clientTypeB api.ClientType) {
 		tc := Instance().CreateTestContext(t, clientTypeA, clientTypeB)
@@ -343,10 +342,9 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 				}
 				event := bob2.MustGetEvent(t, roomID, evID)
 				if event.FailedToDecrypt {
-					t.Logf("bob2 could not decrypt the message (known SDK inconsistency, not a failure)")
-				} else {
-					must.Equal(t, event.Text, body, "bob2 decrypted to the wrong body")
+					t.Skipf("bob2 could not decrypt the pre-join message: known SDK inconsistency in key forwarding to new devices")
 				}
+				must.Equal(t, event.Text, body, "bob2 decrypted to the wrong body")
 			})
 		})
 	})
