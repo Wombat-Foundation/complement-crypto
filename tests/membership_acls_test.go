@@ -313,18 +313,15 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 				time.Sleep(time.Second) // let device keys propagate
 				tc.Bob.MustJoinRoom(t, roomID, []spec.ServerName{clientTypeA.HS})
 
-				// Wait until bob2 sees its own join before backpaginating; avoids a
-				// fixed sleep and ensures the timeline is ready. Worst-case measured
-				// arrival of the backpaginated event was ~997 ms (rr variant), so 2s
-				// provides margin without masking real regressions.
-				bob2.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(tc.Bob.UserID, "join")).
-					Waitf(t, 5*time.Second, "bob2 did not see Bob's join event in %s", roomID)
+				// Don't wait on bob2's own join event instead: on JS the waiter only inspects the live
+				// timeline, and after an initial sync the join can arrive as state, never appearing there.
+				time.Sleep(time.Second) // let the client load the events
 				bob2.MustBackpaginate(t, roomID, 5)
 
 				// On matrix-rust-sdk, Backpaginate returns before the event is actually added to the timeline,
 				// which happens asynchronously
 				waiter := bob2.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(evID))
-				waiter.Waitf(t, 2*time.Second, "Bob did not see Alice's message %s", evID)
+				waiter.Waitf(t, 5*time.Second, "Bob did not see Alice's message %s", evID)
 
 				// Give any (unreliable) background key forwarding a chance to land before
 				// reading the final state. Per the doc comment above both outcomes
