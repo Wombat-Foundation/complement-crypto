@@ -65,6 +65,10 @@ _build-rust-sdk dir:
     cargo build -p matrix-sdk-ffi --features 'sentry'
     uniffi-bindgen-go -o {{ COMPLEMENT_DIR }}/internal/api/rust --config {{ COMPLEMENT_DIR }}/uniffi.toml --library ./target/debug/libmatrix_sdk_ffi.a
 
+# Rebuild the version of matrix-js-sdk used. The version is fed to `yarn add`, e.g. `matrix-js-sdk@file:/path/to/checkout`. (requires on PATH: corepack)
+rebuild-js-sdk js-sdk-version="":
+    ./rebuild_js_sdk.sh {{ quote(js-sdk-version) }}
+
 # Add the cgo LDFLAGS directive to the generated bindings.
 [private]
 _patch-ldflags:
