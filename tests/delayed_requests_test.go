@@ -67,13 +67,6 @@ func TestDelayedInviteResponse(t *testing.T) {
 				t.Logf("Alice /invited Bob")
 				// once the server got the invite, send a message
 				serverHasInvite.Waitf(t, 3*time.Second, "did not intercept invite")
-				if clientType.Lang == api.ClientTypeJS {
-					// js-sdk only learns room membership for crypto from a processed /sync, never from
-					// its own /invite call (matrix-js-sdk#4291), so it cannot win this race. Let the
-					// tarpitted /sync (a known, fixed duration) reach Alice so the test covers what js
-					// can do: encrypt for an invitee once it has seen the invite. Rust keeps the race.
-					time.Sleep(delayTime + time.Second)
-				}
 				t.Logf("intercepted invite; sending message")
 				eventID := alice.MustSendMessage(t, roomID, "hello world!")
 
@@ -98,8 +91,9 @@ func TestDelayedInviteResponse(t *testing.T) {
 					time.Sleep(250 * time.Millisecond)
 				}
 
-				// Rust asserts the full race (matrix-rust-sdk#3622 no longer reproduces). JS
-				// cannot win it (matrix-js-sdk#4291), so above it is given the invite first.
+				// Both langs run the real race: Alice sends while the invite /sync is still
+				// tarpitted. rust-sdk#3622 no longer reproduces; js needs the fix for
+				// matrix-js-sdk#4291 (refresh crypto membership after a successful /invite).
 				must.Equal(t, ev.FailedToDecrypt, false, "failed to decrypt event")
 				must.Equal(t, ev.Text, "hello world!", "failed to decrypt plaintext")
 			})
