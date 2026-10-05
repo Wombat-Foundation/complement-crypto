@@ -44,6 +44,10 @@ case "$JS_SDK_VERSION" in
         ;;
 esac
 
+# Drop any previous install of the SDK first: a stale or cross-checkout entry
+# (e.g. a relative symlink left by an earlier `file:` install) makes `yarn add`
+# fail with EEXIST or yields a broken symlink into node_modules.
+rm -rf ./internal/api/js/js-sdk/node_modules/matrix-js-sdk
 (cd ./internal/api/js/js-sdk && corepack yarn add "$1" && corepack yarn install && corepack yarn build)
 rm -rf ./internal/api/js/chrome/dist || echo 'no dist directory detected';
 cp -r ./internal/api/js/js-sdk/dist/. ./internal/api/js/chrome/dist

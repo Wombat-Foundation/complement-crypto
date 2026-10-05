@@ -96,9 +96,10 @@ rebuild-js-sdk js-sdk-version=LOCAL_JS_SDK:
             fi
             ;;
         *)
-            url="${spec%%#*}"
-            sha="${spec##*#}"
-            if [ "$url" = "$sha" ] || [ -z "$sha" ]; then
+            rest="${spec#matrix-js-sdk@}"
+            url="${rest%%#*}"
+            sha="${rest##*#}"
+            if [ "$url" = "$rest" ] || [ "$url" = "$sha" ] || [ -z "$sha" ]; then
                 echo "error: remote spec must be 'matrix-js-sdk@<url>#<sha>': $spec" >&2
                 exit 1
             fi
