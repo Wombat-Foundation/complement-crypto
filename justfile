@@ -46,7 +46,12 @@ install-uniffi-bindgen:
     cargo install uniffi-bindgen-go --rev 4f79e52bd8f518e5fa4d7acff9e586aee21e12a0 --git https://github.com/NordSecurity/uniffi-bindgen-go
 
 # Rebuild the version of matrix-rust-sdk used and regenerate its Go bindings.
-rebuild-rust-sdk rust-sdk-path:
+# The checkout path defaults to the COMPLEMENT_CRYPTO_RUST_SDK_DIR environment
+# variable / .env entry (or pass it as an argument). This produces the
+# internal/api/rust/matrix_sdk_ffi Go bindings plus
+# <checkout>/target/debug/libmatrix_sdk_ffi.{a,so} that the tests link against.
+# (requires on PATH: cargo, uniffi-bindgen-go)
+rebuild-rust-sdk rust-sdk-path=env_var("COMPLEMENT_CRYPTO_RUST_SDK_DIR"):
     {{ just_executable() }} _build-rust-sdk {{ quote(rust-sdk-path) }}
     {{ just_executable() }} _patch-ldflags
 
@@ -65,14 +70,78 @@ _build-rust-sdk dir:
     uniffi-bindgen-go -o {{ COMPLEMENT_DIR }}/internal/api/rust --config {{ COMPLEMENT_DIR }}/uniffi.toml --library ./target/debug/libmatrix_sdk_ffi.a
 
 
-# Rebuild the version of matrix-js-sdk used. The spec is fed to `yarn add`; it
-# defaults to the pinned GitLab fork (see LOCAL_JS_SDK above) and can be
-# overridden by argument or the LOCAL_JS_SDK environment variable / .env entry.
-# Any `file:` path must be absolute: yarn resolves `file:` against
-# internal/api/js/js-sdk, so a relative path silently resolves somewhere else,
-# differently depending on nesting depth. (requires on PATH: corepack)
+# Rebuild the version of matrix-js-sdk embedded in the JS bundle.
+#
+# The spec is either a remote `matrix-js-sdk@<url>#<sha>` or a local
+# `matrix-js-sdk@file:/abs/path`. It defaults to the pinned GitLab fork
+# (LOCAL_JS_SDK, above) and can be overridden by argument or environment.
+#
+# A remote spec is first materialised into a per-commit build cache
+# (git fetch + `pnpm install --frozen-lockfile && pnpm build`). `yarn add <git
+# url>` cannot build the package on its own: it has no lockfile, so it resolves
+# newer vite/vitest types and fails `tsc`. A local `file:` path is used as-is
+# and must be absolute, because yarn resolves `file:` against
+# internal/api/js/js-sdk, differently at each nesting depth.
+# (requires on PATH: git, pnpm, corepack)
 rebuild-js-sdk js-sdk-version=LOCAL_JS_SDK:
-    ./rebuild_js_sdk.sh {{ quote(js-sdk-version) }}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    spec={{ quote(js-sdk-version) }}
+    case "$spec" in
+        *"@file:"*|file:*)
+            dir="${spec#*file:}"
+            if [ ! -f "$dir/lib/index.js" ]; then
+                echo "error: '$dir' is not a built matrix-js-sdk checkout (no lib/index.js)" >&2
+                exit 1
+            fi
+            ;;
+        *)
+            url="${spec%%#*}"
+            sha="${spec##*#}"
+            if [ "$url" = "$sha" ] || [ -z "$sha" ]; then
+                echo "error: remote spec must be 'matrix-js-sdk@<url>#<sha>': $spec" >&2
+                exit 1
+            fi
+            dir="${XDG_CACHE_HOME:-$HOME/.cache}/complement-crypto/matrix-js-sdk/$sha"
+            if [ ! -f "$dir/lib/index.js" ]; then
+                echo "materialising $url @ $sha into $dir"
+                if [ ! -d "$dir/.git" ]; then
+                    mkdir -p "$dir"
+                    git -C "$dir" init -q
+                    git -C "$dir" remote add origin "$url"
+                fi
+                git -C "$dir" fetch -q --depth 1 origin "$sha"
+                git -C "$dir" checkout -q FETCH_HEAD
+                (cd "$dir" && pnpm install --frozen-lockfile && pnpm build)
+            fi
+            ;;
+    esac
+    ./rebuild_js_sdk.sh "matrix-js-sdk@file:$dir"
+
+# Generate every build artifact the test harness needs, from configurable
+# sources. Safe to re-run: each artifact is only built when missing.
+#
+#   LOCAL_JS_SDK                    matrix-js-sdk spec (default: pinned GitLab fork)
+#   COMPLEMENT_CRYPTO_RUST_SDK_DIR  matrix-rust-sdk checkout (Rust Go bindings)
+#
+# The Rust step is skipped when COMPLEMENT_CRYPTO_RUST_SDK_DIR is unset, since
+# JS-only runs do not need it. Force a rebuild with the individual recipes
+# (`just rebuild-js-sdk` / `just rebuild-rust-sdk`).
+bootstrap:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -f internal/api/js/chrome/dist/index.html ]; then
+        echo "JS bundle already present (force with: just rebuild-js-sdk)"
+    else
+        "{{ just_executable() }}" rebuild-js-sdk
+    fi
+    if [ -z "${COMPLEMENT_CRYPTO_RUST_SDK_DIR:-}" ]; then
+        echo "note: COMPLEMENT_CRYPTO_RUST_SDK_DIR unset; skipping Rust bindings (JS-only)."
+    elif [ -f internal/api/rust/matrix_sdk_ffi/matrix_sdk_ffi.go ]; then
+        echo "Rust bindings already present (force with: just rebuild-rust-sdk)"
+    else
+        "{{ just_executable() }}" rebuild-rust-sdk
+    fi
 
 # Add the cgo LDFLAGS directive to the generated bindings.
 [private]

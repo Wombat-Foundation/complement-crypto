@@ -112,6 +112,46 @@ Perhaps server logs aren't giving enough information and you want to see all HTT
 information, you will need to modify the client code and rebuild it to make sure
 it is running inside the tests.*
 
+### Bootstrapping the generated build artifacts
+
+The tests embed two gitignored, generated artifact sets, so a fresh checkout
+(or a `git clean`) has neither:
+
+* `internal/api/js/{js-sdk,chrome}/dist` -- the bundled JavaScript SDK.
+* `internal/api/rust/matrix_sdk*` and `ruma_events` -- the Go bindings for the
+  Rust SDK (`uniffi-bindgen-go` output), plus the shared library the tests link
+  against.
+
+Both are produced from configurable sources:
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `LOCAL_JS_SDK` | matrix-js-sdk spec: `matrix-js-sdk@<git-url>#<sha>` or `matrix-js-sdk@file:/abs/path` | pinned Wombat-Foundation fork commit |
+| `COMPLEMENT_CRYPTO_RUST_SDK_DIR` | path to a matrix-rust-sdk checkout | unset (Rust step skipped) |
+
+Generate both with:
+
+```
+just bootstrap
+```
+
+It is idempotent: each artifact is built only if missing. Override a source
+per-invocation, e.g.
+
+```
+LOCAL_JS_SDK='matrix-js-sdk@file:/abs/path/to/matrix-js-sdk' just bootstrap
+COMPLEMENT_CRYPTO_RUST_SDK_DIR=/path/to/matrix-rust-sdk just bootstrap
+```
+
+Or set them machine-wide in `.env` (loaded automatically). A remote JS spec is
+materialised into a git + `pnpm` build cache under
+`${XDG_CACHE_HOME:-~/.cache}/complement-crypto/matrix-js-sdk/<sha>`, so
+rebuilding the same commit is cheap. Force a rebuild of one artifact with
+`just rebuild-js-sdk` / `just rebuild-rust-sdk`.
+
+Rust bindings need `cargo` and `uniffi-bindgen-go` on `PATH`
+(`just install-uniffi-bindgen`); JS bundling needs `git`, `pnpm` and `corepack`.
+
 ### JS SDK
 #### Changing the JavaScript directly (the easy way)
 
