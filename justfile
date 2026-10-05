@@ -60,13 +60,13 @@ _build-rust-sdk dir:
     #!/usr/bin/env bash
     set -euxo pipefail
     cd "{{ dir }}"
-    cp Cargo.toml Cargo.toml.backup
-    cp Cargo.lock Cargo.lock.backup
-    trap "mv -f Cargo.toml.backup Cargo.toml; mv -f Cargo.lock.backup Cargo.lock" EXIT
-    if ! grep -q "_disable-minimum-rotation-period-ms" Cargo.toml; then
-        sed -i "s#matrix-sdk-crypto = {#matrix-sdk-crypto = {features = [\"_disable-minimum-rotation-period-ms\"],#" Cargo.toml
-    fi
-    cargo build -p matrix-sdk-ffi --features sentry
+    # Enable the min-rotation-period disable via matrix-sdk-ffi's own feature
+    # flag rather than editing Cargo.toml: the previous sed injection was
+    # brittle (depended on the exact `matrix-sdk-crypto = {` shape), left the
+    # checkout dirty, and could silently no-op, so the tests could link a
+    # library that still enforced the minimum rotation period.
+    cargo build -p matrix-sdk-ffi \
+        --features sentry,_only-for-testing-disable-megolm-minimum-rotation-period-ms
     uniffi-bindgen-go -o {{ COMPLEMENT_DIR }}/internal/api/rust --config {{ COMPLEMENT_DIR }}/uniffi.toml --library ./target/debug/libmatrix_sdk_ffi.a
 
 
@@ -144,7 +144,15 @@ bootstrap:
         "{{ just_executable() }}" rebuild-rust-sdk
     fi
 
-# Add the cgo LDFLAGS directive to the generated bindings.
+# Add the cgo LDFLAGS directive to the generated bindings (idempotent: the
+# bindgen output is overwritten on every build, but a re-run over an existing
+# file must not stack duplicate directives).
 [private]
 _patch-ldflags:
-    sed -i.bak 's^// #include <matrix_sdk_ffi.h>^// #include <matrix_sdk_ffi.h>\n// #cgo LDFLAGS: -lmatrix_sdk_ffi^' internal/api/rust/matrix_sdk_ffi/matrix_sdk_ffi.go
+    #!/usr/bin/env bash
+    set -euo pipefail
+    f=internal/api/rust/matrix_sdk_ffi/matrix_sdk_ffi.go
+    if grep -q '#cgo LDFLAGS: -lmatrix_sdk_ffi' "$f"; then
+        exit 0
+    fi
+    sed -i.bak 's^// #include <matrix_sdk_ffi.h>^// #include <matrix_sdk_ffi.h>\n// #cgo LDFLAGS: -lmatrix_sdk_ffi^' "$f"
