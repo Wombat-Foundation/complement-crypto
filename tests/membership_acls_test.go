@@ -345,8 +345,9 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 				}
 				if event.FailedToDecrypt {
 					t.Skipf("bob2 could not decrypt the pre-join message: known SDK inconsistency in key forwarding to new devices")
+				} else {
+					must.Equal(t, event.Text, body, "bob2 decrypted to the wrong body")
 				}
-				must.Equal(t, event.Text, body, "bob2 decrypted to the wrong body")
 			})
 		})
 	})
