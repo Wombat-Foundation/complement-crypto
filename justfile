@@ -68,6 +68,15 @@ _build-rust-sdk dir:
     cargo build -p matrix-sdk-ffi \
         --features sentry,_only-for-testing-disable-megolm-minimum-rotation-period-ms
     uniffi-bindgen-go -o {{ COMPLEMENT_DIR }}/internal/api/rust --config {{ COMPLEMENT_DIR }}/uniffi.toml --library ./target/debug/libmatrix_sdk_ffi.a
+    # uniffi-bindgen-go releases that predate Uniffi 0.32 ignore the `go_mod`
+    # setting in uniffi.toml and emit bare crate imports (e.g. "matrix_sdk"),
+    # which do not resolve inside the Go module. Qualify them with the
+    # configured module path. Idempotent: only the bare form is matched.
+    go_mod="$(sed -nE 's/^go_mod[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' {{ COMPLEMENT_DIR }}/uniffi.toml | head -n1)"
+    if [ -n "$go_mod" ]; then
+        find {{ COMPLEMENT_DIR }}/internal/api/rust -name '*.go' -print0 \
+            | xargs -0 -r sed -i -E "s#^([[:space:]]*)\"(matrix_sdk[a-z_]*|ruma_events)\"#\1\"$go_mod/\2\"#"
+    fi
 
 
 # Rebuild the version of matrix-js-sdk embedded in the JS bundle.
@@ -155,4 +164,4 @@ _patch-ldflags:
     if grep -q '#cgo LDFLAGS: -lmatrix_sdk_ffi' "$f"; then
         exit 0
     fi
-    sed -i.bak 's^// #include <matrix_sdk_ffi.h>^// #include <matrix_sdk_ffi.h>\n// #cgo LDFLAGS: -lmatrix_sdk_ffi^' "$f"
+    sed -i 's^// #include <matrix_sdk_ffi.h>^// #include <matrix_sdk_ffi.h>\n// #cgo LDFLAGS: -lmatrix_sdk_ffi^' "$f"
