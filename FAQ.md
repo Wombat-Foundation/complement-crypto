@@ -195,7 +195,9 @@ If you want to try out changes within a local `matrix-js-sdk`:
     pnpm install   # or `yarn install`; runs `prepare`, which runs the build
     ```
 
-    Repeat this step after every change you make to the checkout.
+    Repeat steps 2 and 3 after every change you make to the checkout. Step 3
+    copies the built `file:` dependency into the test bundle; rebuilding the
+    checkout alone does not refresh the bundle.
 
 3. Rebuild the JS SDK used by the tests:
 
