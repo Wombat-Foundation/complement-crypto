@@ -41,6 +41,12 @@ func (r *LanguageBindings) PostTestRun(contextID string) {
 	// Instead, we do this call when RPC clients are closed.
 }
 
+// rpcStartupTimeout bounds how long to wait for the RPC binary to echo its port.
+// The binary normally boots in tens of milliseconds, but exec under heavy
+// sharded load can occasionally exceed a second. This is process startup, not a
+// test correctness wait.
+const rpcStartupTimeout = 10 * time.Second
+
 // MustCreateClient starts the RPC server and configures it to use the
 // correct language. Returns an error if:
 //   - the binary cannot be found or run
@@ -91,8 +97,8 @@ func (r *LanguageBindings) MustCreateClient(t ct.TestLike, cfg api.ClientCreatio
 			rpcCmd:      rpcCmd,
 			logsFlushed: logsFlushed,
 		}
-	case <-time.After(time.Second):
-		ct.Fatalf(t, "RPC (%s): timed out waiting for port number to be echoed to stdout. Did the RPC binary run, and is it actually the RPC binary? Path: %s", contextID, r.binaryPath)
+	case <-time.After(rpcStartupTimeout):
+		ct.Fatalf(t, "RPC (%s): timed out after %s waiting for port number to be echoed to stdout. Did the RPC binary run, and is it actually the RPC binary? Path: %s", contextID, rpcStartupTimeout, r.binaryPath)
 	}
 	panic("unreachable")
 }
