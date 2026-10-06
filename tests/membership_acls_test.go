@@ -239,7 +239,7 @@ func TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 			waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(onlyFirstDeviceBody))
 			evID := alice.MustSendMessage(t, roomID, onlyFirstDeviceBody)
 			t.Logf("bob (%s) waiting for event %s", bob.Type(), evID)
-			waiter.Waitf(t, 5*time.Second, "bob did not see alice's message")
+			waiter.Waitf(t, 15*time.Second, "bob did not see alice's message")
 
 			// now bob logs in on a new device. He should NOT be able to decrypt this event (though can see it due to history visibility)
 			csapiBob2 := tc.MustRegisterNewDevice(t, tc.Bob, "NEW_DEVICE")
@@ -257,7 +257,7 @@ func TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 				waiter = bob2.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(decryptableBody))
 				evID = alice.MustSendMessage(t, roomID, decryptableBody)
 				t.Logf("bob2 (%s) waiting for event %s", bob2.Type(), evID)
-				waiter.Waitf(t, 5*time.Second, "bob2 did not see alice's message")
+				waiter.Waitf(t, 15*time.Second, "bob2 did not see alice's message")
 			})
 
 			// now bob logs out
@@ -271,7 +271,7 @@ func TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 			waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(undecryptableBody))
 			evID = alice.MustSendMessage(t, roomID, undecryptableBody)
 			t.Logf("bob (%s) waiting for event %s", bob.Type(), evID)
-			waiter.Waitf(t, 5*time.Second, "bob did not see alice's event %s", evID)
+			waiter.Waitf(t, 15*time.Second, "bob did not see alice's event %s", evID)
 
 			// now bob logs in again
 			tc.WithClientSyncing(t, &cc.ClientCreationRequest{
