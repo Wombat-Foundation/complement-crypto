@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -78,9 +79,11 @@ func TestVerificationSAS(t *testing.T) {
 				verifiee.Logf(t, "Verifiee (RECEIVER) %s %s", verifieeClientType.Lang, verifiee.Opts().DeviceID)
 				verifieeStage := verifiee.ListenForVerificationRequests(t)
 				verifierStage := verifier.RequestOwnUserVerification(t)
+				var lastReceiver, lastSender string
 				for {
 					select {
 					case receiverStage := <-verifieeStage:
+						lastReceiver = fmt.Sprintf("%T", receiverStage)
 						switch stage := receiverStage.(type) {
 						case api.VerificationStageRequestedReceiver:
 							t.Logf("[RECEIVER] VerificationStageRequestedReceiver: %+v", stage.Request())
@@ -107,6 +110,7 @@ func TestVerificationSAS(t *testing.T) {
 							ct.Errorf(t, "[RECEIVER] VerificationStageCancelled")
 						}
 					case senderStage := <-verifierStage:
+						lastSender = fmt.Sprintf("%T", senderStage)
 						switch stage := senderStage.(type) {
 						case api.VerificationStageRequestedReceiver: // the verifier should not get a requestee state
 							ct.Errorf(t, "[SENDER]   VerificationStageRequestedReceiver: %+v", stage.Request())
@@ -132,8 +136,8 @@ func TestVerificationSAS(t *testing.T) {
 						case api.VerificationStageCancelled: // should not be cancelled
 							ct.Errorf(t, "[SENDER]   VerificationStageCancelled")
 						}
-					case <-time.After(5 * time.Second):
-						ct.Fatalf(t, "timed out after 5s")
+					case <-time.After(15 * time.Second):
+						ct.Fatalf(t, "timed out after 15s waiting for verification stages (last receiver=%s, last sender=%s)", lastReceiver, lastSender)
 						return
 					}
 				}

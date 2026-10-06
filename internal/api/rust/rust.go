@@ -82,6 +82,12 @@ type RustClient struct {
 	opts                  api.ClientCreationOpts
 	closed                *atomic.Bool
 
+	// Session verification plumbing. Detached in Close so SDK callbacks cannot
+	// call into a finished test: the delegate logs, and the state listener holds
+	// its own reference, both of which fire on the SDK runtime.
+	verificationController    *matrix_sdk_ffi.SessionVerificationController
+	verificationStateListener *matrix_sdk_ffi.TaskHandle
+
 	// for push notification tests (single/multi-process)
 	notifClient *matrix_sdk_ffi.NotificationClient
 }
@@ -259,29 +265,41 @@ func (c *RustClient) CurrentAccessToken(t ct.TestLike) string {
 	return s.AccessToken
 }
 
-func (c *RustClient) ListenForVerificationRequests(t ct.TestLike) chan api.VerificationStage {
-	c.FFISpan.Enter()
-	defer c.FFISpan.Exit()
-
-	t.Helper()
-	svc, err := c.FFIClient.GetSessionVerificationController()
-	if err != nil {
-		ct.Fatalf(t, "GetSessionVerificationController: %s", err)
-	}
-
+// newSessionVerificationDelegate wires up the shared plumbing for a session
+// verification flow: the container's send functions, the controller delegate,
+// and the verification state listener (so Done stages carry VerificationState).
+//
+// Only one delegate exists per controller, so a client cannot listen for an
+// incoming request and hold an outgoing request at the same time. isVerifiee
+// selects the direction: the incoming side surfaces DidReceiveVerificationRequest
+// as a stage, while the outgoing side ignores its own re-received request.
+//
+// The send functions intentionally mirror the FFI controller surface (ack /
+// accept-request / start / approve / decline / cancel). There are no
+// receiver-side "accept SAS" or "done" calls: the SDK auto-accepts the SAS and
+// starts listening as soon as the request transitions (session_verification.rs),
+// and emits DidFinish when it completes.
+func (c *RustClient) newSessionVerificationDelegate(
+	t ct.TestLike,
+	svc *matrix_sdk_ffi.SessionVerificationController,
+	vreq api.VerificationRequest,
+	isVerifiee bool,
+) (*api.VerificationContainer, chan api.VerificationStage, *SessionVerificationControllerDelegate) {
 	// we need to support multiple transition stages firing at once
 	ch := make(chan api.VerificationStage, 4)
 	container := &api.VerificationContainer{
 		Mutex: &sync.Mutex{},
-		VReq: api.VerificationRequest{
-			ReceiverUserID:   c.userID,
-			ReceiverDeviceID: c.opts.DeviceID,
-		},
+		VReq:  vreq,
 	}
-	// The incoming request is only known once DidReceiveVerificationRequest fires
-	// and populates container.VReq, so read it lazily here.
 	container.SendReady = func() {
-		if err := svc.AcknowledgeVerificationRequest(container.VReq.SenderUserID, container.VReq.TxnID); err != nil {
+		// The incoming request is only known once DidReceiveVerificationRequest
+		// fires, so snapshot it under the lock rather than reading VReq directly.
+		var senderUserID, txnID string
+		container.Modify(func(cc *api.VerificationContainer) {
+			senderUserID = cc.VReq.SenderUserID
+			txnID = cc.VReq.TxnID
+		})
+		if err := svc.AcknowledgeVerificationRequest(senderUserID, txnID); err != nil {
 			ct.Errorf(t, "failed to AcknowledgeVerificationRequest: %s", err)
 			return
 		}
@@ -291,7 +309,7 @@ func (c *RustClient) ListenForVerificationRequests(t ct.TestLike) chan api.Verif
 	}
 	container.SendStart = func(method string) {
 		if method != "m.sas.v1" {
-			ct.Errorf(t, "ListenForVerificationRequests.Start: method chosen must be m.sas.v1")
+			ct.Errorf(t, "session verification Start: method chosen must be m.sas.v1")
 			return
 		}
 		if err := svc.StartSasVerification(); err != nil {
@@ -314,8 +332,7 @@ func (c *RustClient) ListenForVerificationRequests(t ct.TestLike) chan api.Verif
 		}
 	}
 	container.SendTransition = func() {
-		// no-op: the FFI accepts the SAS and starts listening for its changes as
-		// soon as the request transitions to a SAS verification.
+		// no-op: the FFI auto-accepts the SAS when the request transitions.
 	}
 	container.SendDone = func() {
 		// no-op: the FFI emits DidFinish when the SAS verification completes.
@@ -326,10 +343,28 @@ func (c *RustClient) ListenForVerificationRequests(t ct.TestLike) chan api.Verif
 		controller: svc,
 		container:  container,
 		ch:         ch,
-		isVerifiee: true,
+		isVerifiee: isVerifiee,
 	}
+	c.verificationController = svc
+	c.verificationStateListener = c.FFIClient.Encryption().VerificationStateListener(delegateImpl)
 	var delegate matrix_sdk_ffi.SessionVerificationControllerDelegate = delegateImpl
 	svc.SetDelegate(&delegate)
+	return container, ch, delegateImpl
+}
+
+func (c *RustClient) ListenForVerificationRequests(t ct.TestLike) chan api.VerificationStage {
+	c.FFISpan.Enter()
+	defer c.FFISpan.Exit()
+
+	t.Helper()
+	svc, err := c.FFIClient.GetSessionVerificationController()
+	if err != nil {
+		ct.Fatalf(t, "GetSessionVerificationController: %s", err)
+	}
+	_, ch, _ := c.newSessionVerificationDelegate(t, svc, api.VerificationRequest{
+		ReceiverUserID:   c.userID,
+		ReceiverDeviceID: c.opts.DeviceID,
+	}, true)
 	return ch
 }
 
@@ -337,59 +372,17 @@ func (c *RustClient) RequestOwnUserVerification(t ct.TestLike) chan api.Verifica
 	c.FFISpan.Enter()
 	defer c.FFISpan.Exit()
 
+	t.Helper()
 	svc, err := c.FFIClient.GetSessionVerificationController()
 	if err != nil {
 		ct.Fatalf(t, "GetSessionVerificationController: %s", err)
 	}
-
-	container := &api.VerificationContainer{
-		Mutex: &sync.Mutex{},
-		VReq: api.VerificationRequest{
-			SenderUserID:   c.userID,
-			SenderDeviceID: c.opts.DeviceID,
-			ReceiverUserID: c.userID,
-			TxnID:          "unknown",
-		},
-		SendCancel: func() {
-			if err := svc.CancelVerification(); err != nil {
-				ct.Errorf(t, "failed to CancelVerification: %s", err)
-			}
-		},
-		SendStart: func(method string) {
-			if method != "m.sas.v1" {
-				ct.Errorf(t, "RequestOwnUserVerification.Start: method chosen must be m.sas.v1")
-				return
-			}
-			if err := svc.StartSasVerification(); err != nil {
-				ct.Errorf(t, "failed to StartSasVerification: %s", err)
-			}
-		},
-		SendApprove: func() {
-			if err := svc.ApproveVerification(); err != nil {
-				ct.Errorf(t, "failed to ApproveVerification: %s", err)
-			}
-		},
-		SendDecline: func() {
-			if err := svc.DeclineVerification(); err != nil {
-				ct.Errorf(t, "failed to ApproveVerification: %s", err)
-			}
-		},
-		SendTransition: func() {
-			// no-op, other clients need this step.
-		},
-	}
-	// need to allow multiple Transition calls to be fired at once
-	ch := make(chan api.VerificationStage, 4)
-	delegateImpl := &SessionVerificationControllerDelegate{
-		t:          t,
-		controller: svc,
-		container:  container,
-		ch:         ch,
-	}
-	c.FFIClient.Encryption().VerificationStateListener(delegateImpl)
-
-	var delegate matrix_sdk_ffi.SessionVerificationControllerDelegate = delegateImpl
-	svc.SetDelegate(&delegate)
+	container, ch, _ := c.newSessionVerificationDelegate(t, svc, api.VerificationRequest{
+		SenderUserID:   c.userID,
+		SenderDeviceID: c.opts.DeviceID,
+		ReceiverUserID: c.userID,
+		TxnID:          "unknown",
+	}, false)
 	if err = svc.RequestDeviceVerification(); err != nil {
 		ct.Fatalf(t, "RequestDeviceVerification: %s", err)
 	}
@@ -439,6 +432,18 @@ func (c *RustClient) Close(t ct.TestLike) {
 	if c.entriesAdapters != nil {
 		c.entriesAdapters.Destroy()
 		c.entriesAdapters = nil
+	}
+	// Detach verification before destroying the client: the delegate logs, and a
+	// late DidFinish/DidCancel/DidFail would otherwise panic by logging after the
+	// test has completed. The state listener holds its own delegate reference, so
+	// cancel it too.
+	if c.verificationController != nil {
+		c.verificationController.SetDelegate(nil)
+		c.verificationController = nil
+	}
+	if c.verificationStateListener != nil {
+		c.verificationStateListener.Cancel()
+		c.verificationStateListener = nil
 	}
 	c.FFIClient.Destroy()
 	c.FFIClient = nil
@@ -1239,6 +1244,8 @@ type SessionVerificationControllerDelegate struct {
 }
 
 func (s *SessionVerificationControllerDelegate) DidReceiveVerificationRequest(details matrix_sdk_ffi.SessionVerificationRequestDetails) {
+	s.t.Logf("SessionVerificationControllerDelegate.DidReceiveVerificationRequest: sender=%s device=%s flow=%s verifiee=%t",
+		details.SenderProfile.UserId, details.DeviceId, details.FlowId, s.isVerifiee)
 	if !s.isVerifiee {
 		return
 	}
@@ -1251,14 +1258,17 @@ func (s *SessionVerificationControllerDelegate) DidReceiveVerificationRequest(de
 }
 
 func (s *SessionVerificationControllerDelegate) DidAcceptVerificationRequest() {
+	s.t.Logf("SessionVerificationControllerDelegate.DidAcceptVerificationRequest")
 	s.ch <- api.NewVerificationStageReady(s.container)
 }
 
 func (s *SessionVerificationControllerDelegate) DidStartSasVerification() {
+	s.t.Logf("SessionVerificationControllerDelegate.DidStartSasVerification")
 	s.ch <- api.NewVerificationStageStart(s.container)
 }
 
 func (s *SessionVerificationControllerDelegate) DidReceiveVerificationData(data matrix_sdk_ffi.SessionVerificationData) {
+	s.t.Logf("SessionVerificationControllerDelegate.DidReceiveVerificationData")
 	vData := api.VerificationData{}
 	switch d := data.(type) {
 	case matrix_sdk_ffi.SessionVerificationDataEmojis:
@@ -1277,14 +1287,20 @@ func (s *SessionVerificationControllerDelegate) DidReceiveVerificationData(data 
 }
 
 func (s *SessionVerificationControllerDelegate) DidFail() {
+	// Terminal: the SDK only calls this on genuine failure paths (start_sas
+	// yielding nothing, or accepting the SAS failing), so emit a terminal stage
+	// rather than leaving the test to time out with no signal.
 	s.t.Logf("SessionVerificationControllerDelegate.DidFail")
+	s.ch <- api.NewVerificationStageCancelled(s.container)
 }
 
 func (s *SessionVerificationControllerDelegate) DidCancel() {
+	s.t.Logf("SessionVerificationControllerDelegate.DidCancel")
 	s.ch <- api.NewVerificationStageCancelled(s.container)
 }
 
 func (s *SessionVerificationControllerDelegate) DidFinish() {
+	s.t.Logf("SessionVerificationControllerDelegate.DidFinish")
 	s.ch <- api.NewVerificationStageDone(s.container)
 }
 
