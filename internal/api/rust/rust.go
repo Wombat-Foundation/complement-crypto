@@ -755,7 +755,7 @@ func (c *RustClient) SendMessage(t ct.TestLike, roomID, text string, timeout ...
 	defer c.FFISpan.Exit()
 
 	t.Helper()
-	waitFor := 11 * time.Second
+	waitFor := api.ScaleTimeout(11 * time.Second)
 	if len(timeout) > 0 {
 		waitFor = timeout[0]
 	}
@@ -1079,6 +1079,7 @@ func (w *timelineWaiter) Waitf(t ct.TestLike, s time.Duration, format string, ar
 
 func (w *timelineWaiter) TryWaitf(t ct.TestLike, s time.Duration, format string, args ...any) error {
 	t.Helper()
+	s = api.ScaleTimeout(s)
 
 	checkForEvent := func() bool {
 		t.Helper()
