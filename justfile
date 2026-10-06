@@ -77,6 +77,9 @@ _build-rust-sdk dir:
         find {{ COMPLEMENT_DIR }}/internal/api/rust -name '*.go' -print0 \
             | xargs -0 -r sed -i -E "s#^([[:space:]]*)\"(matrix_sdk[a-z_]*|ruma_events)\"#\1\"$go_mod/\2\"#"
     fi
+    # Verify the regenerated bindings compile: a bindgen/ABI mismatch should
+    # fail here with the compiler error, not later as a mysterious empty run.
+    ( cd {{ COMPLEMENT_DIR }} && go build -tags=rust ./internal/api/rust/... )
 
 
 # Rebuild the version of matrix-js-sdk embedded in the JS bundle.
