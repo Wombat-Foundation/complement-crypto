@@ -53,7 +53,7 @@ func TestAliceBobEncryptionWorks(t *testing.T) {
 
 			// Bob receives the message
 			t.Logf("bob (%s) waiting for event %s", bob.Type(), evID)
-			waiter.Waitf(t, 15*time.Second, "bob did not see alice's message")
+			waiter.Waitf(t, 5*time.Second, "bob did not see alice's message")
 		})
 	})
 }
@@ -100,7 +100,7 @@ func TestCanDecryptMessagesAfterInviteButBeforeJoin(t *testing.T) {
 			sentinelBody := "Sentinel"
 			waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(sentinelBody))
 			alice.MustSendMessage(t, roomID, sentinelBody)
-			waiter.Waitf(t, 15*time.Second, "bob did not see alice's message")
+			waiter.Waitf(t, 5*time.Second, "bob did not see alice's message")
 
 			// Explicitly ask for a pagination, rather than assuming the SDK will return events
 			// earlier than the join by default. This is important because:
@@ -108,7 +108,7 @@ func TestCanDecryptMessagesAfterInviteButBeforeJoin(t *testing.T) {
 			// - sliding sync (FFI) it won't return events before the join by default, relying on clients using the prev_batch token.
 			waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 			bob.MustBackpaginate(t, roomID, 5) // number is arbitrary, just needs to be >=2
-			waiter.Waitf(t, 15*time.Second, "bob did not see backpaginated message")
+			waiter.Waitf(t, 5*time.Second, "bob did not see backpaginated message")
 		})
 	})
 }
@@ -129,13 +129,13 @@ func TestBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 			waiter := alice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(beforeJoinBody))
 			evID := alice.MustSendMessage(t, roomID, beforeJoinBody)
 			t.Logf("alice (%s) waiting for event %s", alice.Type(), evID)
-			waiter.Waitf(t, 15*time.Second, "alice did not see own message")
+			waiter.Waitf(t, 5*time.Second, "alice did not see own message")
 
 			// now bob joins the room
 			tc.Bob.MustJoinRoom(t, roomID, []spec.ServerName{clientTypeA.HS})
 			time.Sleep(time.Second) // wait for it to appear on the client else rust crashes if it cannot find the room FIXME
 			waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(bob.UserID(), "join"))
-			waiter.Waitf(t, 15*time.Second, "bob did not see own join")
+			waiter.Waitf(t, 5*time.Second, "bob did not see own join")
 
 			// bob hits scrollback and should see but not be able to decrypt the message
 			bob.MustBackpaginate(t, roomID, 5)
@@ -170,24 +170,24 @@ func TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 			waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(bothJoinedBody))
 			evID := alice.MustSendMessage(t, roomID, bothJoinedBody)
 			t.Logf("bob (%s) waiting for event %s", bob.Type(), evID)
-			waiter.Waitf(t, 15*time.Second, "bob did not see alice's message")
+			waiter.Waitf(t, 5*time.Second, "bob did not see alice's message")
 
 			// now bob leaves the room, wait for alice to see it
 			waiter = alice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(bob.UserID(), "leave"))
 			tc.Bob.MustLeaveRoom(t, roomID)
-			waiter.Waitf(t, 15*time.Second, "alice did not see bob's leave")
+			waiter.Waitf(t, 5*time.Second, "alice did not see bob's leave")
 
 			// now alice sends another message, which should use a key that bob does not have. Wait for the remote echo to come back.
 			onlyAliceBody := "Only me on my lonesome"
 			waiter = alice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(onlyAliceBody))
 			evID = alice.MustSendMessage(t, roomID, onlyAliceBody)
 			t.Logf("alice (%s) waiting for event %s", alice.Type(), evID)
-			waiter.Waitf(t, 15*time.Second, "alice did not see own message")
+			waiter.Waitf(t, 5*time.Second, "alice did not see own message")
 
 			// now bob rejoins the room, wait until he sees it.
 			tc.Bob.MustJoinRoom(t, roomID, []spec.ServerName{clientTypeA.HS})
 			waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(bob.UserID(), "join"))
-			waiter.Waitf(t, 15*time.Second, "bob did not see own join")
+			waiter.Waitf(t, 5*time.Second, "bob did not see own join")
 			// this is required for some reason else tests fail
 			time.Sleep(time.Second)
 
@@ -202,7 +202,7 @@ func TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 			// added to the timeline (per the comment above), so this is a genuine async race,
 			// not a fixed-cost operation - under load a 1s budget flakes even though the event
 			// arrives shortly after. Match the 5s budget used by every other waiter in this test.
-			waiter.Waitf(t, 15*time.Second, "Bob did not see Alice's message %s", evID)
+			waiter.Waitf(t, 5*time.Second, "Bob did not see Alice's message %s", evID)
 
 			ev := bob.MustGetEvent(t, roomID, evID)
 			must.NotEqual(t, ev.Text, onlyAliceBody, "bob was able to decrypt a message from before he was joined")
@@ -239,7 +239,7 @@ func TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 			waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(onlyFirstDeviceBody))
 			evID := alice.MustSendMessage(t, roomID, onlyFirstDeviceBody)
 			t.Logf("bob (%s) waiting for event %s", bob.Type(), evID)
-			waiter.Waitf(t, 15*time.Second, "bob did not see alice's message")
+			waiter.Waitf(t, 5*time.Second, "bob did not see alice's message")
 
 			// now bob logs in on a new device. He should NOT be able to decrypt this event (though can see it due to history visibility)
 			csapiBob2 := tc.MustRegisterNewDevice(t, tc.Bob, "NEW_DEVICE")
@@ -257,7 +257,7 @@ func TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 				waiter = bob2.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(decryptableBody))
 				evID = alice.MustSendMessage(t, roomID, decryptableBody)
 				t.Logf("bob2 (%s) waiting for event %s", bob2.Type(), evID)
-				waiter.Waitf(t, 15*time.Second, "bob2 did not see alice's message")
+				waiter.Waitf(t, 5*time.Second, "bob2 did not see alice's message")
 			})
 
 			// now bob logs out
@@ -271,7 +271,7 @@ func TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 			waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(undecryptableBody))
 			evID = alice.MustSendMessage(t, roomID, undecryptableBody)
 			t.Logf("bob (%s) waiting for event %s", bob.Type(), evID)
-			waiter.Waitf(t, 15*time.Second, "bob did not see alice's event %s", evID)
+			waiter.Waitf(t, 5*time.Second, "bob did not see alice's event %s", evID)
 
 			// now bob logs in again
 			tc.WithClientSyncing(t, &cc.ClientCreationRequest{

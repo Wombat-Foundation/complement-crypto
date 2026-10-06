@@ -2,35 +2,12 @@ package api
 
 import (
 	"fmt"
-	"os"
-	"strconv"
-	"time"
-
 	"github.com/matrix-org/gomatrixserverlib/spec"
+	"time"
 
 	"github.com/matrix-org/complement/client"
 	"github.com/matrix-org/complement/ct"
 )
-
-// TestTimeoutScale returns the multiplier applied to correctness wait/timeout
-// budgets. Loading several shards onto one machine can push rust receive/decrypt
-// and local echo past the fixed budgets these waits use, which shows up as
-// unrelated tests flaking from run to run. Set COMPLEMENT_CRYPTO_TEST_TIMEOUT_SCALE
-// (default 1) to give every waiter headroom in one place, instead of widening
-// them individually. Non-integer or non-positive values fall back to 1.
-func TestTimeoutScale() time.Duration {
-	if v := os.Getenv("COMPLEMENT_CRYPTO_TEST_TIMEOUT_SCALE"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			return time.Duration(n)
-		}
-	}
-	return 1
-}
-
-// ScaleTimeout applies TestTimeoutScale to d.
-func ScaleTimeout(d time.Duration) time.Duration {
-	return d * TestTimeoutScale()
-}
 
 type ClientType struct {
 	Lang ClientTypeLang  // rust or js

@@ -853,7 +853,6 @@ func (w *jsTimelineWaiter) Waitf(t ct.TestLike, s time.Duration, format string, 
 
 func (w *jsTimelineWaiter) TryWaitf(t ct.TestLike, s time.Duration, format string, args ...any) error {
 	t.Helper()
-	s = api.ScaleTimeout(s)
 	updates := make(chan bool, 3)
 	cancel := w.client.listenForUpdates(func(ctrlMsg *ControlMessage) {
 		msg := ctrlMsg.AsControlMessageEvent()
