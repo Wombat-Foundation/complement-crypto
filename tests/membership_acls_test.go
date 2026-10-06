@@ -108,7 +108,10 @@ func TestCanDecryptMessagesAfterInviteButBeforeJoin(t *testing.T) {
 			// - sliding sync (FFI) it won't return events before the join by default, relying on clients using the prev_batch token.
 			waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 			bob.MustBackpaginate(t, roomID, 5) // number is arbitrary, just needs to be >=2
-			waiter.Waitf(t, 5*time.Second, "bob did not see backpaginated message")
+			// Backpagination is a genuine correctness path (the 4-way run classified
+			// this as real latency, not exposure) and is slow under shard contention,
+			// so it gets headroom independent of the sentinel wait above.
+			waiter.Waitf(t, 20*time.Second, "bob did not see backpaginated message")
 		})
 	})
 }
