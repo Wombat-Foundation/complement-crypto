@@ -2,11 +2,13 @@ package tests
 
 import (
 	"fmt"
-	"github.com/matrix-org/gomatrixserverlib/spec"
 	"net/http"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/matrix-org/gomatrixserverlib/spec"
 
 	"github.com/matrix-org/complement-crypto/internal/api"
 	"github.com/matrix-org/complement-crypto/internal/cc"
@@ -108,6 +110,35 @@ func mustClaimOTKs(t *testing.T, claimer *client.CSAPI, target *cc.User, otkCoun
 	}
 }
 
+// waitForFallbackKeyUploaded waits until the server reports an unused
+// signed_curve25519 fallback key for csapi's device, i.e. the SDK's
+// asynchronous fallback-key upload has landed. TestFallbackKeyIsUsedIfOneTimeKeysRunOut
+// blocks /keys/upload for the rest of the test, so without this the block races
+// the upload and the fallback key can never reach the server - making the claim
+// below poll for something the block itself makes impossible.
+func waitForFallbackKeyUploaded(t *testing.T, csapi *client.CSAPI) {
+	t.Helper()
+	start := time.Now()
+	for {
+		res := csapi.MustDo(t, "GET", []string{"_matrix", "client", "v3", "sync"},
+			client.WithQueries(url.Values{"device_unused_fallback_key_types": []string{"true"}}),
+		)
+		body := must.ParseJSON(t, res.Body)
+		if err := res.Body.Close(); err != nil {
+			t.Logf("failed to close /sync response body: %s", err)
+		}
+		for _, ty := range body.Get("device_unused_fallback_key_types").Array() {
+			if ty.Str == "signed_curve25519" {
+				return
+			}
+		}
+		if time.Since(start) > 10*time.Second {
+			t.Fatalf("fallback key was not uploaded within 10s; device_unused_fallback_key_types=%s", body.Get("device_unused_fallback_key_types").Raw)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // - Alice logs in, uploads OTKs AND A FALLBACK KEY (which is what this is trying to test!)
 // - Block all /keys/upload
 // - Manually claim all OTKs in the test.
@@ -139,6 +170,9 @@ func TestFallbackKeyIsUsedIfOneTimeKeysRunOut(t *testing.T) {
 
 			var roomID string
 			var waiter api.Waiter
+			// Wait for the SDK's asynchronous fallback-key upload to land before
+			// blocking /keys/upload, so the block can't race it (see helper).
+			waitForFallbackKeyUploaded(t, tc.Alice.CSAPI)
 			// Block all /keys/upload requests for Alice
 			tc.Deployment.MITM().Configure(t).WithIntercept(mitm.InterceptOpts{
 				Filter: mitm.FilterParams{
