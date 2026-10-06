@@ -290,8 +290,9 @@ func TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 // `history_visibility: shared` (PresetPublicChat): forwarding the room key to a newly-joined
 // device for pre-join history is not reliably implemented today - confirmed empirically,
 // neither JS nor Rust consistently decrypts within a generous wait, and either can occasionally
-// succeed depending on timing. If bob2 cannot decrypt, the test is skipped (not passed) so it is visibly
-// not exercised; if it does decrypt, the plaintext must be correct.
+// succeed depending on timing. Both outcomes are asserted below: the message must arrive and must
+// decrypt, so a FailedToDecrypt is a hard failure (a real regression, same shape as
+// TestDelayedInviteResponse) rather than an acceptable result.
 func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 	Instance().ClientTypeMatrix(t, func(t *testing.T, clientTypeA, clientTypeB api.ClientType) {
 		tc := Instance().CreateTestContext(t, clientTypeA, clientTypeB)
@@ -321,9 +322,8 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 				//
 				// Backpaginate can return before the event is added to the timeline (rust does this
 				// asynchronously), and an event still being decrypted reports neither
-				// FailedToDecrypt nor a body, so only stop once one of the two is known. Per the doc
-				// comment above both outcomes are acceptable; what must not happen is an event that
-				// never arrives or never finishes decrypting.
+				// FailedToDecrypt nor a body, so only stop once one of the two is known. Both
+				// outcomes are then asserted below: the message must arrive and must decrypt.
 				var event *api.Event
 				deadline := time.Now().Add(20 * time.Second)
 				var lastErr error
@@ -343,11 +343,11 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 					}
 					time.Sleep(250 * time.Millisecond)
 				}
-				if event.FailedToDecrypt {
-					t.Skipf("bob2 could not decrypt the pre-join message: known SDK inconsistency in key forwarding to new devices")
-				} else {
-					must.Equal(t, event.Text, body, "bob2 decrypted to the wrong body")
-				}
+				// Alice's message must be re-encrypted for bob's new device, so a
+				// FailedToDecrypt here is a regression, not an acceptable outcome
+				// (same shape as TestDelayedInviteResponse).
+				must.Equal(t, event.FailedToDecrypt, false, "bob2 could not decrypt the pre-join message")
+				must.Equal(t, event.Text, body, "bob2 decrypted to the wrong body")
 			})
 		})
 	})
