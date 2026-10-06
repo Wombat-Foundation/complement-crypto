@@ -63,9 +63,11 @@ jobs:
           rustup default stable
       - name: Checkout matrix-rust-sdk
         run: |
-          BRANCH=$(./.github/workflows/resolve_branch.sh matrix-org/matrix-rust-sdk)
+          # Pinned to gg-forks/matrix-rust-sdk@42e520dc4 (fix(base): only rotate room key
+          # when membership actually changes) until that lands upstream.
+          RUST_SDK_REF=42e520dc4ade457291ab443c6907cc90ce40af39
           mkdir rust-sdk
-          wget -O archive.tar.gz "https://github.com/matrix-org/matrix-rust-sdk/archive/$BRANCH.tar.gz"
+          wget -O archive.tar.gz "https://github.com/gg-forks/matrix-rust-sdk/archive/$RUST_SDK_REF.tar.gz"
           zcat < archive.tar.gz | git get-tar-commit-id # useful for debugging
           tar -xz --strip-components=1 -C rust-sdk < archive.tar.gz
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
