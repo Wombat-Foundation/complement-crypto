@@ -42,10 +42,11 @@ func (r *LanguageBindings) PostTestRun(contextID string) {
 }
 
 // rpcStartupTimeout bounds how long to wait for the RPC binary to echo its port.
-// The binary normally boots in tens of milliseconds, but exec under heavy
-// sharded load can occasionally exceed a second. This is process startup, not a
-// test correctness wait.
-const rpcStartupTimeout = 10 * time.Second
+// The binary normally boots in tens of milliseconds; the previous 1s budget was
+// too tight under 4-way shard contention. This is process startup, not a test
+// correctness wait, and it only applies to a binary that is alive but silent -
+// a binary that exits is detected immediately via the stdout reader.
+const rpcStartupTimeout = 5 * time.Second
 
 // MustCreateClient starts the RPC server and configures it to use the
 // correct language. Returns an error if:
@@ -76,6 +77,12 @@ func (r *LanguageBindings) MustCreateClient(t ct.TestLike, cfg api.ClientCreatio
 
 	select {
 	case p := <-portCh:
+		if p.err != nil {
+			// The binary exited (or closed stdout) before echoing a port. The reader
+			// goroutine has already logged its output line-by-line, so this names
+			// "crashed" rather than obscuring it behind a DialHTTP failure.
+			ct.Fatalf(t, "RPC (%s): RPC binary exited before echoing a port: %s. Path: %s", contextID, p.err, r.binaryPath)
+		}
 		rpcAddr := fmt.Sprintf("127.0.0.1:%d", p.port)
 		var void int
 		client, err := rpc.DialHTTP("tcp", rpcAddr)
@@ -98,7 +105,13 @@ func (r *LanguageBindings) MustCreateClient(t ct.TestLike, cfg api.ClientCreatio
 			logsFlushed: logsFlushed,
 		}
 	case <-time.After(rpcStartupTimeout):
-		ct.Fatalf(t, "RPC (%s): timed out after %s waiting for port number to be echoed to stdout. Did the RPC binary run, and is it actually the RPC binary? Path: %s", contextID, rpcStartupTimeout, r.binaryPath)
+		// The binary is alive but has not echoed a port. Kill it so it and the
+		// reader goroutine don't outlive the test, drain so the reader can flush
+		// whatever output it captured, then report with that context.
+		_ = rpcCmd.Process.Kill()
+		<-portCh
+		<-logsFlushed
+		ct.Fatalf(t, "RPC (%s): the RPC binary produced no port within %s. Path: %s", contextID, rpcStartupTimeout, r.binaryPath)
 	}
 	panic("unreachable")
 }
