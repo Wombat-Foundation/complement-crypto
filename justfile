@@ -11,7 +11,7 @@ COMPLEMENT_DIR := justfile_directory()
 # .env entry to test a local checkout (the path must be absolute):
 #
 #   LOCAL_JS_SDK='matrix-js-sdk@file:/abs/path/to/matrix-js-sdk' just rebuild-js-sdk
-LOCAL_JS_SDK := env_var_or_default("LOCAL_JS_SDK", "matrix-js-sdk@https://gitlab.com/Wombat-Foundation/matrix-js-sdk#1ea51700dd8e4899ba2bfc69255ac0f7f0e4e3af")
+LOCAL_JS_SDK := env_var_or_default("LOCAL_JS_SDK", "matrix-js-sdk@https://gitlab.com/Wombat-Foundation/matrix-js-sdk#ba48cf7c768996e17b90d9565109f1ea837b5eea")
 
 # Replace the `install-uniffi-bindgen` recipe with this once uniffi-bindgen-go
 # gets a release with Uniffi 0.32 support.
