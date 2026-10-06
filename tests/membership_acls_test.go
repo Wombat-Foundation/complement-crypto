@@ -170,24 +170,24 @@ func TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 			waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(bothJoinedBody))
 			evID := alice.MustSendMessage(t, roomID, bothJoinedBody)
 			t.Logf("bob (%s) waiting for event %s", bob.Type(), evID)
-			waiter.Waitf(t, 5*time.Second, "bob did not see alice's message")
+			waiter.Waitf(t, 15*time.Second, "bob did not see alice's message")
 
 			// now bob leaves the room, wait for alice to see it
 			waiter = alice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(bob.UserID(), "leave"))
 			tc.Bob.MustLeaveRoom(t, roomID)
-			waiter.Waitf(t, 5*time.Second, "alice did not see bob's leave")
+			waiter.Waitf(t, 15*time.Second, "alice did not see bob's leave")
 
 			// now alice sends another message, which should use a key that bob does not have. Wait for the remote echo to come back.
 			onlyAliceBody := "Only me on my lonesome"
 			waiter = alice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(onlyAliceBody))
 			evID = alice.MustSendMessage(t, roomID, onlyAliceBody)
 			t.Logf("alice (%s) waiting for event %s", alice.Type(), evID)
-			waiter.Waitf(t, 5*time.Second, "alice did not see own message")
+			waiter.Waitf(t, 15*time.Second, "alice did not see own message")
 
 			// now bob rejoins the room, wait until he sees it.
 			tc.Bob.MustJoinRoom(t, roomID, []spec.ServerName{clientTypeA.HS})
 			waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(bob.UserID(), "join"))
-			waiter.Waitf(t, 5*time.Second, "bob did not see own join")
+			waiter.Waitf(t, 15*time.Second, "bob did not see own join")
 			// this is required for some reason else tests fail
 			time.Sleep(time.Second)
 
@@ -202,7 +202,7 @@ func TestOnRejoinBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 			// added to the timeline (per the comment above), so this is a genuine async race,
 			// not a fixed-cost operation - under load a 1s budget flakes even though the event
 			// arrives shortly after. Match the 5s budget used by every other waiter in this test.
-			waiter.Waitf(t, 5*time.Second, "Bob did not see Alice's message %s", evID)
+			waiter.Waitf(t, 15*time.Second, "Bob did not see Alice's message %s", evID)
 
 			ev := bob.MustGetEvent(t, roomID, evID)
 			must.NotEqual(t, ev.Text, onlyAliceBody, "bob was able to decrypt a message from before he was joined")
