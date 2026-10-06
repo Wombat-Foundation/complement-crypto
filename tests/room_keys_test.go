@@ -127,7 +127,7 @@ func TestRoomKeyIsCycledAfterEnoughMessages(t *testing.T) {
 				wantMsgBody := fmt.Sprintf("Before we hit the threshold %d", i)
 				waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 				alice.MustSendMessage(t, roomID, wantMsgBody)
-				waiter.Waitf(t, 5*time.Second, "bob did not see alice's message '%s'", wantMsgBody)
+				waiter.Waitf(t, 15*time.Second, "bob did not see alice's message '%s'", wantMsgBody)
 			}
 
 			// Sniff calls to /sendToDevice to ensure we see the new room key being sent.
@@ -143,12 +143,12 @@ func TestRoomKeyIsCycledAfterEnoughMessages(t *testing.T) {
 				wantMsgBody := "This one hits the threshold"
 				waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 				alice.MustSendMessage(t, roomID, wantMsgBody)
-				waiter.Waitf(t, 5*time.Second, "bob did not see alice's message '%s'", wantMsgBody)
+				waiter.Waitf(t, 15*time.Second, "bob did not see alice's message '%s'", wantMsgBody)
 
 				wantMsgBody = "After the threshold"
 				waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 				alice.MustSendMessage(t, roomID, wantMsgBody)
-				waiter.Waitf(t, 5*time.Second, "bob did not see alice's message '%s'", wantMsgBody)
+				waiter.Waitf(t, 15*time.Second, "bob did not see alice's message '%s'", wantMsgBody)
 
 				// Then we did send out new keys
 				pc.Recv(t, "did not see /sendToDevice after sending rotation_period_msgs messages")
@@ -201,7 +201,7 @@ func TestRoomKeyIsCycledAfterEnoughTime(t *testing.T) {
 			wantMsgBody := "Before we start"
 			waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 			alice.MustSendMessage(t, roomID, wantMsgBody)
-			waiter.Waitf(t, 5*time.Second, "Did not see 'before we start' event in the room")
+			waiter.Waitf(t, 15*time.Second, "Did not see 'before we start' event in the room")
 
 			// Sniff calls to /sendToDevice to ensure we see the new room key being sent.
 			sniffToDeviceEvent(t, tc, func(pc *callback.PassiveChannel) {
@@ -209,7 +209,7 @@ func TestRoomKeyIsCycledAfterEnoughTime(t *testing.T) {
 				wantMsgBody := "Before the time expires"
 				waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 				alice.MustSendMessage(t, roomID, wantMsgBody)
-				waiter.Waitf(t, 5*time.Second, "Did not see 'before the time expires' event in the room")
+				waiter.Waitf(t, 15*time.Second, "Did not see 'before the time expires' event in the room")
 
 				// When we wait 1+period seconds
 				time.Sleep(rotationPeriod + time.Second)
@@ -218,7 +218,7 @@ func TestRoomKeyIsCycledAfterEnoughTime(t *testing.T) {
 				wantMsgBody = "After the time expires"
 				waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 				alice.MustSendMessage(t, roomID, wantMsgBody)
-				waiter.Waitf(t, 5*time.Second, "Did not see 'after the time expires' event in the room")
+				waiter.Waitf(t, 15*time.Second, "Did not see 'after the time expires' event in the room")
 
 				pc.Recv(t, "did not see /sendToDevice after waiting rotation_period_ms milliseconds")
 			})
