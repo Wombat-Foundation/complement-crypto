@@ -427,52 +427,51 @@ func testRoomKeyIsNotCycledOnClientRestartRust(t *testing.T, clientType api.Clie
 	)
 	tc.Bob.MustJoinRoom(t, roomID, []spec.ServerName{clientType.HS})
 
+	// Alice starts in a separate process with persistent storage, but unlike the
+	// previous shape she is NOT torn down implicitly by WithClientSyncing: mirror
+	// the JS variant's explicit lifecycle (stop-sync + Close, then reopen on the
+	// same opts/device id) so the only variable under test is the teardown.
+	remoteAlice := tc.MustLoginClient(t, &cc.ClientCreationRequest{
+		User: tc.Alice,
+		Opts: api.ClientCreationOpts{
+			PersistentStorage: true,
+		},
+		Multiprocess: true,
+	})
+	remoteAliceStopSyncing := remoteAlice.MustStartSyncing(t)
+
 	tc.WithClientSyncing(t, &cc.ClientCreationRequest{
 		User: tc.Bob,
 	}, func(bob api.TestClient) {
+		// check the room works
 		wantMsgBody := "test from another process"
-		var firstSessionID string
-		// send a message as Alice in a different process
-		tc.WithClientSyncing(t, &cc.ClientCreationRequest{
-			User: tc.Alice,
-			Opts: api.ClientCreationOpts{
-				PersistentStorage: true,
-			},
-			Multiprocess: true,
-		}, func(remoteAlice api.TestClient) {
-			eventID := remoteAlice.MustSendMessage(t, roomID, wantMsgBody)
-			firstSessionID = roomKeySessionID(t, tc.Alice.CSAPI, roomID, eventID)
-			waiter := remoteAlice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(eventID))
-			waiter.Waitf(t, 5*time.Second, "client did not see event %s", eventID)
-		})
-
 		waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
+		firstEventID := remoteAlice.MustSendMessage(t, roomID, wantMsgBody)
 		waiter.Waitf(t, 8*time.Second, "bob did not see alice's message")
-
-		// Now recreate the same client and make sure we don't send new room keys.
+		firstSessionID := roomKeySessionID(t, tc.Alice.CSAPI, roomID, firstEventID)
 
 		// we're going to sniff calls to /sendToDevice to ensure we do NOT see a new room key being sent.
 		sniffToDeviceEvent(t, tc, func(pc *callback.PassiveChannel) {
-			// login as alice
-			alice := tc.MustLoginClient(t, &cc.ClientCreationRequest{
+			// restart alice: explicit stop-sync then Close, then reopen on the same
+			// opts/device id (mirrors the JS variant).
+			remoteAliceStopSyncing()
+			remoteAlice.Close(t)
+
+			var secondSessionID string
+			tc.WithClientSyncing(t, &cc.ClientCreationRequest{
 				User: tc.Alice,
-				Opts: api.ClientCreationOpts{
-					PersistentStorage: true,
-				},
+				Opts: remoteAlice.Opts(),
+			}, func(alice api.TestClient) {
+				// we don't know how long it will take for the device list update to be processed, so wait 1s
+				time.Sleep(time.Second)
+
+				// now send another message from Alice, who should NOT negotiate a new room key
+				wantMsgBody = "Another Test Message"
+				waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
+				secondEventID := alice.MustSendMessage(t, roomID, wantMsgBody)
+				waiter.Waitf(t, 5*time.Second, "bob did not see alice's message")
+				secondSessionID = roomKeySessionID(t, tc.Alice.CSAPI, roomID, secondEventID)
 			})
-			defer alice.Close(t)
-			aliceStopSyncing := alice.MustStartSyncing(t)
-			defer aliceStopSyncing()
-
-			// we don't know how long it will take for the device list update to be processed, so wait 1s
-			time.Sleep(time.Second)
-
-			// now send another message from Alice, who should NOT negotiate a new room key
-			wantMsgBody = "Another Test Message"
-			waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
-			secondEventID := alice.MustSendMessage(t, roomID, wantMsgBody)
-			waiter.Waitf(t, 5*time.Second, "bob did not see alice's message")
-			secondSessionID := roomKeySessionID(t, tc.Alice.CSAPI, roomID, secondEventID)
 
 			// A restart can legitimately re-send the *already-shared* room key to Bob
 			// (rust does this intermittently on restart), which is not a cycle. What
