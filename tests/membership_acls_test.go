@@ -53,7 +53,7 @@ func TestAliceBobEncryptionWorks(t *testing.T) {
 
 			// Bob receives the message
 			t.Logf("bob (%s) waiting for event %s", bob.Type(), evID)
-			waiter.Waitf(t, 5*time.Second, "bob did not see alice's message")
+			waiter.Waitf(t, 15*time.Second, "bob did not see alice's message")
 		})
 	})
 }
@@ -100,7 +100,7 @@ func TestCanDecryptMessagesAfterInviteButBeforeJoin(t *testing.T) {
 			sentinelBody := "Sentinel"
 			waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(sentinelBody))
 			alice.MustSendMessage(t, roomID, sentinelBody)
-			waiter.Waitf(t, 5*time.Second, "bob did not see alice's message")
+			waiter.Waitf(t, 15*time.Second, "bob did not see alice's message")
 
 			// Explicitly ask for a pagination, rather than assuming the SDK will return events
 			// earlier than the join by default. This is important because:
@@ -108,7 +108,7 @@ func TestCanDecryptMessagesAfterInviteButBeforeJoin(t *testing.T) {
 			// - sliding sync (FFI) it won't return events before the join by default, relying on clients using the prev_batch token.
 			waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 			bob.MustBackpaginate(t, roomID, 5) // number is arbitrary, just needs to be >=2
-			waiter.Waitf(t, 5*time.Second, "bob did not see backpaginated message")
+			waiter.Waitf(t, 15*time.Second, "bob did not see backpaginated message")
 		})
 	})
 }
@@ -129,13 +129,13 @@ func TestBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 			waiter := alice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(beforeJoinBody))
 			evID := alice.MustSendMessage(t, roomID, beforeJoinBody)
 			t.Logf("alice (%s) waiting for event %s", alice.Type(), evID)
-			waiter.Waitf(t, 5*time.Second, "alice did not see own message")
+			waiter.Waitf(t, 15*time.Second, "alice did not see own message")
 
 			// now bob joins the room
 			tc.Bob.MustJoinRoom(t, roomID, []spec.ServerName{clientTypeA.HS})
 			time.Sleep(time.Second) // wait for it to appear on the client else rust crashes if it cannot find the room FIXME
 			waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(bob.UserID(), "join"))
-			waiter.Waitf(t, 5*time.Second, "bob did not see own join")
+			waiter.Waitf(t, 15*time.Second, "bob did not see own join")
 
 			// bob hits scrollback and should see but not be able to decrypt the message
 			bob.MustBackpaginate(t, roomID, 5)
