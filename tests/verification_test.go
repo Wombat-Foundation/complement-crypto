@@ -58,9 +58,6 @@ func (s *verificationStatus) attemptVerification(t *testing.T) {
 // happy case test of Alice verifying one of her devices.
 func TestVerificationSAS(t *testing.T) {
 	Instance().ClientTypeMatrix(t, func(t *testing.T, verifierClientType, verifieeClientType api.ClientType) {
-		if verifieeClientType.Lang == api.ClientTypeRust {
-			t.Skipf("rust cannot be a verifiee yet, see https://github.com/matrix-org/matrix-rust-sdk/issues/3595")
-		}
 		tc := Instance().CreateTestContext(t, verifierClientType)
 		verifieeUser := &cc.User{
 			CSAPI:      tc.Alice.CSAPI,

@@ -260,7 +260,77 @@ func (c *RustClient) CurrentAccessToken(t ct.TestLike) string {
 }
 
 func (c *RustClient) ListenForVerificationRequests(t ct.TestLike) chan api.VerificationStage {
-	return nil // TODO rust cannot be a verifiee yet, see https://github.com/matrix-org/matrix-rust-sdk/issues/3595
+	c.FFISpan.Enter()
+	defer c.FFISpan.Exit()
+
+	t.Helper()
+	svc, err := c.FFIClient.GetSessionVerificationController()
+	if err != nil {
+		ct.Fatalf(t, "GetSessionVerificationController: %s", err)
+	}
+
+	// we need to support multiple transition stages firing at once
+	ch := make(chan api.VerificationStage, 4)
+	container := &api.VerificationContainer{
+		Mutex: &sync.Mutex{},
+		VReq: api.VerificationRequest{
+			ReceiverUserID:   c.userID,
+			ReceiverDeviceID: c.opts.DeviceID,
+		},
+	}
+	// The incoming request is only known once DidReceiveVerificationRequest fires
+	// and populates container.VReq, so read it lazily here.
+	container.SendReady = func() {
+		if err := svc.AcknowledgeVerificationRequest(container.VReq.SenderUserID, container.VReq.TxnID); err != nil {
+			ct.Errorf(t, "failed to AcknowledgeVerificationRequest: %s", err)
+			return
+		}
+		if err := svc.AcceptVerificationRequest(); err != nil {
+			ct.Errorf(t, "failed to AcceptVerificationRequest: %s", err)
+		}
+	}
+	container.SendStart = func(method string) {
+		if method != "m.sas.v1" {
+			ct.Errorf(t, "ListenForVerificationRequests.Start: method chosen must be m.sas.v1")
+			return
+		}
+		if err := svc.StartSasVerification(); err != nil {
+			ct.Errorf(t, "failed to StartSasVerification: %s", err)
+		}
+	}
+	container.SendApprove = func() {
+		if err := svc.ApproveVerification(); err != nil {
+			ct.Errorf(t, "failed to ApproveVerification: %s", err)
+		}
+	}
+	container.SendDecline = func() {
+		if err := svc.DeclineVerification(); err != nil {
+			ct.Errorf(t, "failed to DeclineVerification: %s", err)
+		}
+	}
+	container.SendCancel = func() {
+		if err := svc.CancelVerification(); err != nil {
+			ct.Errorf(t, "failed to CancelVerification: %s", err)
+		}
+	}
+	container.SendTransition = func() {
+		// no-op: the FFI accepts the SAS and starts listening for its changes as
+		// soon as the request transitions to a SAS verification.
+	}
+	container.SendDone = func() {
+		// no-op: the FFI emits DidFinish when the SAS verification completes.
+	}
+
+	delegateImpl := &SessionVerificationControllerDelegate{
+		t:          t,
+		controller: svc,
+		container:  container,
+		ch:         ch,
+		isVerifiee: true,
+	}
+	var delegate matrix_sdk_ffi.SessionVerificationControllerDelegate = delegateImpl
+	svc.SetDelegate(&delegate)
+	return ch
 }
 
 func (c *RustClient) RequestOwnUserVerification(t ct.TestLike) chan api.VerificationStage {
@@ -1162,10 +1232,22 @@ type SessionVerificationControllerDelegate struct {
 	controller *matrix_sdk_ffi.SessionVerificationController
 	container  *api.VerificationContainer
 	ch         chan api.VerificationStage
+	// isVerifiee is set for the incoming (receiver) side so that an incoming
+	// request is surfaced as a stage. The outgoing (verifier) side re-receives
+	// its own request and must ignore it, matching the JS behaviour.
+	isVerifiee bool
 }
 
 func (s *SessionVerificationControllerDelegate) DidReceiveVerificationRequest(details matrix_sdk_ffi.SessionVerificationRequestDetails) {
-	// we're not currently testing incoming session verification requests
+	if !s.isVerifiee {
+		return
+	}
+	s.container.Modify(func(cc *api.VerificationContainer) {
+		cc.VReq.SenderUserID = details.SenderProfile.UserId
+		cc.VReq.SenderDeviceID = details.DeviceId
+		cc.VReq.TxnID = details.FlowId
+	})
+	s.ch <- api.NewVerificationStageRequestedReceiver(s.container)
 }
 
 func (s *SessionVerificationControllerDelegate) DidAcceptVerificationRequest() {
