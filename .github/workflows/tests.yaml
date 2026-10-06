@@ -63,9 +63,9 @@ jobs:
           rustup default stable
       - name: Checkout matrix-rust-sdk
         run: |
-          # Pinned to gg-forks/matrix-rust-sdk@42e520dc4 (fix(base): only rotate room key
-          # when membership actually changes) until that lands upstream.
-          RUST_SDK_REF=42e520dc4ade457291ab443c6907cc90ce40af39
+          # Pinned to gg-forks/matrix-rust-sdk@6c35f386b (rotate room keys on member reload;
+          # invite-time membership races) until that lands upstream.
+          RUST_SDK_REF=6c35f386b5b944989cf88b821e72cb21f682893e
           mkdir rust-sdk
           wget -O archive.tar.gz "https://github.com/gg-forks/matrix-rust-sdk/archive/$RUST_SDK_REF.tar.gz"
           zcat < archive.tar.gz | git get-tar-commit-id # useful for debugging
@@ -79,11 +79,12 @@ jobs:
         with:
           tool: just
 
-      # Install whatever version of the JS SDK is in package.json
+      # Pinned to gg-forks/matrix-js-sdk@ba48cf7c7 (refresh crypto membership after invite,
+      # matrix-js-sdk#4291) until that lands upstream.
       - name: Build JS SDK
         run: |
-          BRANCH=$(./.github/workflows/resolve_branch.sh matrix-org/matrix-js-sdk)
-          ./rebuild_js_sdk.sh "matrix-js-sdk@https://github.com/matrix-org/matrix-js-sdk#$BRANCH"
+          JS_SDK_REF=ba48cf7c768996e17b90d9565109f1ea837b5eea
+          ./rebuild_js_sdk.sh "matrix-js-sdk@https://github.com/gg-forks/matrix-js-sdk#$JS_SDK_REF"
 
       - name: Build Rust FFI bindings
         run: |
