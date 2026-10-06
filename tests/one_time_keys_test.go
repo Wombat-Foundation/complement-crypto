@@ -3,7 +3,6 @@ package tests
 import (
 	"fmt"
 	"net/http"
-	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -112,28 +111,31 @@ func mustClaimOTKs(t *testing.T, claimer *client.CSAPI, target *cc.User, otkCoun
 
 // waitForFallbackKeyUploaded waits until the server reports an unused
 // signed_curve25519 fallback key for csapi's device, i.e. the SDK's
-// asynchronous fallback-key upload has landed. TestFallbackKeyIsUsedIfOneTimeKeysRunOut
-// blocks /keys/upload for the rest of the test, so without this the block races
-// the upload and the fallback key can never reach the server - making the claim
-// below poll for something the block itself makes impossible.
+// asynchronous fallback-key upload has landed. MSC2732 exposes this via the
+// /sync response field device_unused_fallback_key_types, which is a response
+// field only (not a request parameter) and which fallback-capable servers
+// always include; continuwuity does.
+//
+// TestFallbackKeyIsUsedIfOneTimeKeysRunOut blocks /keys/upload for the rest of
+// the test, so without this the block races the upload and the fallback key can
+// never reach the server - making the claim below poll for something the block
+// itself makes impossible.
+//
+// Bounded at 30s: this shares the machine with the other shards.
 func waitForFallbackKeyUploaded(t *testing.T, csapi *client.CSAPI) {
 	t.Helper()
 	start := time.Now()
+	var since string
 	for {
-		res := csapi.MustDo(t, "GET", []string{"_matrix", "client", "v3", "sync"},
-			client.WithQueries(url.Values{"device_unused_fallback_key_types": []string{"true"}}),
-		)
-		body := must.ParseJSON(t, res.Body)
-		if err := res.Body.Close(); err != nil {
-			t.Logf("failed to close /sync response body: %s", err)
-		}
+		body, next := csapi.MustSync(t, client.SyncReq{Since: since})
+		since = next
 		for _, ty := range body.Get("device_unused_fallback_key_types").Array() {
 			if ty.Str == "signed_curve25519" {
 				return
 			}
 		}
-		if time.Since(start) > 10*time.Second {
-			t.Fatalf("fallback key was not uploaded within 10s; device_unused_fallback_key_types=%s", body.Get("device_unused_fallback_key_types").Raw)
+		if time.Since(start) > 30*time.Second {
+			t.Fatalf("fallback key was not uploaded within 30s; device_unused_fallback_key_types=%s", body.Get("device_unused_fallback_key_types").Raw)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
