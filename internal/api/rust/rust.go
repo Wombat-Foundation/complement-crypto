@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -77,6 +78,8 @@ type RustClient struct {
 	allRooms              *matrix_sdk_ffi.RoomList
 	rooms                 map[string]*RustRoomInfo
 	roomsMu               *sync.RWMutex
+	subMu                 *sync.Mutex
+	subscribed            map[string]struct{}
 	userID                string
 	persistentStoragePath string
 	opts                  api.ClientCreationOpts
@@ -133,6 +136,8 @@ func NewRustClient(t ct.TestLike, opts api.ClientCreationOpts) (api.Client, erro
 		roomsListener:         NewRoomsListener(),
 		rooms:                 make(map[string]*RustRoomInfo),
 		roomsMu:               &sync.RWMutex{},
+		subMu:                 &sync.Mutex{},
+		subscribed:            make(map[string]struct{}),
 		opts:                  opts,
 		persistentStoragePath: "./rust_storage/" + username,
 		closed:                &atomic.Bool{},
@@ -663,7 +668,22 @@ func (c *RustClient) SubscribeToRoom(t ct.TestLike, roomID string) error {
 	if c.syncService == nil {
 		return fmt.Errorf("cannot subscribe to room %s: StartSyncing not yet called", roomID)
 	}
-	if err := c.syncService.RoomListService().SubscribeToRooms([]string{roomID}); err != nil {
+	c.subMu.Lock()
+	c.subscribed[roomID] = struct{}{}
+	roomIDs := make([]string, 0, len(c.subscribed))
+	for id := range c.subscribed {
+		roomIDs = append(roomIDs, id)
+	}
+	sort.Strings(roomIDs)
+
+	// SetRoomSubscriptions replaces the whole subscription set, so always send
+	// the cumulative set of rooms requested by this client. Keep the mutex held
+	// through the SDK call so concurrent callers cannot apply an older snapshot
+	// after a newer one. On failure, retain the requested room so a later call
+	// retries the complete desired set.
+	err := c.syncService.RoomListService().SetRoomSubscriptions(roomIDs)
+	c.subMu.Unlock()
+	if err != nil {
 		return fmt.Errorf("cannot subscribe to room %s: %s", roomID, err)
 	}
 	return nil
