@@ -136,9 +136,9 @@ func TestVerificationSAS(t *testing.T) {
 						case api.VerificationStageCancelled: // should not be cancelled
 							ct.Errorf(t, "[SENDER]   VerificationStageCancelled")
 						}
-					// 30s rather than 15s: the handshake itself runs in ~5-10s isolated,
+					// 30s rather than 5s: the handshake itself runs in ~5-10s isolated,
 					// but under 4-way shard contention the to-device round-trips are
-					// starved past 15s (the {rust}|{js} combo passes isolated at 5.6s and
+					// starved past 5s (the {rust}|{js} combo passes isolated at 5.6s and
 					// only fails sharded). This is a real correctness wait, not masking a
 					// hang: a genuine handshake failure still trips DidFail/DidCancel and
 					// arrives as VerificationStageCancelled, not a timeout.
