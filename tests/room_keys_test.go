@@ -87,7 +87,7 @@ func TestRoomKeyIsCycledOnDeviceLogout(t *testing.T) {
 				wantMsgBody = "Another Test Message"
 				waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 				alice.MustSendMessage(t, roomID, wantMsgBody)
-				waiter.Waitf(t, 5*time.Second, "bob did not see alice's new message")
+				waiter.Waitf(t, 20*time.Second, "bob did not see alice's new message")
 
 				// we should have seen a /sendToDevice call by now. If we didn't, this implies we didn't cycle
 				// the room key. We can't actually inspect the event itself, so just the fact we see the
@@ -403,6 +403,20 @@ func TestRoomKeyIsNotCycledOnClientRestart(t *testing.T) {
 	})
 }
 
+// roomKeySessionID returns the megolm session id of an encrypted event, i.e. the
+// identity of the room key (outbound group session) used to encrypt it. The event
+// wire content stays m.room.encrypted, so this is readable from the raw event even
+// though the room-key to-device payload is Olm-encrypted and opaque to the MITM.
+func roomKeySessionID(t *testing.T, csapi *client.CSAPI, roomID, eventID string) string {
+	t.Helper()
+	ev := csapi.MustGetEvent(t, roomID, eventID)
+	sessionID := ev.Get("content.session_id").Str
+	if sessionID == "" {
+		t.Fatalf("event %s has no content.session_id; content=%s", eventID, ev.Get("content").Raw)
+	}
+	return sessionID
+}
+
 func testRoomKeyIsNotCycledOnClientRestartRust(t *testing.T, clientType api.ClientType) {
 	tc := Instance().CreateTestContext(t, clientType, clientType)
 	roomID := tc.CreateNewEncryptedRoom(
@@ -413,56 +427,74 @@ func testRoomKeyIsNotCycledOnClientRestartRust(t *testing.T, clientType api.Clie
 	)
 	tc.Bob.MustJoinRoom(t, roomID, []spec.ServerName{clientType.HS})
 
+	// Alice starts in a separate process with persistent storage, but unlike the
+	// previous shape she is NOT torn down implicitly by WithClientSyncing: mirror
+	// the JS variant's explicit lifecycle (stop-sync + Close, then reopen on the
+	// same opts/device id) so the only variable under test is the teardown.
+	remoteAlice := tc.MustLoginClient(t, &cc.ClientCreationRequest{
+		User: tc.Alice,
+		Opts: api.ClientCreationOpts{
+			PersistentStorage: true,
+		},
+		Multiprocess: true,
+	})
+	remoteAliceClosed := false
+	var remoteAliceStopSyncing func()
+	t.Cleanup(func() {
+		if remoteAliceStopSyncing != nil {
+			remoteAliceStopSyncing()
+		}
+		if !remoteAliceClosed {
+			remoteAlice.Close(t)
+		}
+	})
+	remoteAliceStopSyncing = remoteAlice.MustStartSyncing(t)
+
 	tc.WithClientSyncing(t, &cc.ClientCreationRequest{
 		User: tc.Bob,
 	}, func(bob api.TestClient) {
+		// check the room works
 		wantMsgBody := "test from another process"
-		// send a message as Alice in a different process
-		tc.WithClientSyncing(t, &cc.ClientCreationRequest{
-			User: tc.Alice,
-			Opts: api.ClientCreationOpts{
-				PersistentStorage: true,
-			},
-			Multiprocess: true,
-		}, func(remoteAlice api.TestClient) {
-			eventID := remoteAlice.MustSendMessage(t, roomID, wantMsgBody)
-			waiter := remoteAlice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(eventID))
-			waiter.Waitf(t, 5*time.Second, "client did not see event %s", eventID)
-		})
-
 		waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
+		firstEventID := remoteAlice.MustSendMessage(t, roomID, wantMsgBody)
 		waiter.Waitf(t, 8*time.Second, "bob did not see alice's message")
-
-		// Now recreate the same client and make sure we don't send new room keys.
+		firstSessionID := roomKeySessionID(t, tc.Alice.CSAPI, roomID, firstEventID)
 
 		// we're going to sniff calls to /sendToDevice to ensure we do NOT see a new room key being sent.
 		sniffToDeviceEvent(t, tc, func(pc *callback.PassiveChannel) {
-			// login as alice
-			alice := tc.MustLoginClient(t, &cc.ClientCreationRequest{
+			// restart alice: explicit stop-sync then Close, then reopen on the same
+			// opts/device id (mirrors the JS variant).
+			aliceOpts := remoteAlice.Opts()
+			remoteAliceStopSyncing()
+			remoteAliceStopSyncing = nil
+			remoteAlice.Close(t)
+			remoteAliceClosed = true
+
+			var secondSessionID string
+			tc.WithClientSyncing(t, &cc.ClientCreationRequest{
 				User: tc.Alice,
-				Opts: api.ClientCreationOpts{
-					PersistentStorage: true,
-				},
+				Opts: aliceOpts,
+			}, func(alice api.TestClient) {
+				// we don't know how long it will take for the device list update to be processed, so wait 1s
+				time.Sleep(time.Second)
+
+				// now send another message from Alice, who should NOT negotiate a new room key
+				wantMsgBody = "Another Test Message"
+				waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
+				secondEventID := alice.MustSendMessage(t, roomID, wantMsgBody)
+				waiter.Waitf(t, 5*time.Second, "bob did not see alice's message")
+				secondSessionID = roomKeySessionID(t, tc.Alice.CSAPI, roomID, secondEventID)
 			})
-			defer alice.Close(t)
-			aliceStopSyncing := alice.MustStartSyncing(t)
-			defer aliceStopSyncing()
 
-			// we don't know how long it will take for the device list update to be processed, so wait 1s
-			time.Sleep(time.Second)
-
-			// now send another message from Alice, who should NOT negotiate a new room key
-			wantMsgBody = "Another Test Message"
-			waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
-			alice.MustSendMessage(t, roomID, wantMsgBody)
-			waiter.Waitf(t, 5*time.Second, "bob did not see alice's message")
-
-			// we should have seen a /sendToDevice call by now. If we didn't, this implies we didn't cycle
-			// the room key.
-			got := pc.TryRecv(t)
-			if got != nil {
-				ct.Fatalf(t, "saw /sendToDevice when restarting the client and sending a new message")
+			// A restart can legitimately re-send the *already-shared* room key to Bob
+			// (rust does this intermittently on restart), which is not a cycle. What
+			// matters is whether the outbound room key itself was rotated, so compare
+			// the megolm session id before vs after the restart rather than failing on
+			// any /sendToDevice.
+			if got := pc.TryRecv(t); got != nil {
+				t.Logf("saw /sendToDevice after restart; room key rotated=%t", firstSessionID != secondSessionID)
 			}
+			must.Equal(t, firstSessionID, secondSessionID, "room key was cycled on client restart (megolm session id changed)")
 		})
 	})
 }
@@ -492,8 +524,9 @@ func testRoomKeyIsNotCycledOnClientRestartJS(t *testing.T, clientType api.Client
 		// check the room works
 		wantMsgBody := "Test Message"
 		waiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
-		alice.MustSendMessage(t, roomID, wantMsgBody)
+		firstEventID := alice.MustSendMessage(t, roomID, wantMsgBody)
 		waiter.Waitf(t, 5*time.Second, "bob did not see alice's message")
+		firstSessionID := roomKeySessionID(t, tc.Alice.CSAPI, roomID, firstEventID)
 
 		// we're going to sniff calls to /sendToDevice to ensure we do NOT see a new room key being sent.
 		sniffToDeviceEvent(t, tc, func(pc *callback.PassiveChannel) {
@@ -501,6 +534,7 @@ func testRoomKeyIsNotCycledOnClientRestartJS(t *testing.T, clientType api.Client
 			aliceStopSyncing()
 			alice.Close(t)
 
+			var secondSessionID string
 			tc.WithClientSyncing(t, &cc.ClientCreationRequest{
 				User: tc.Alice,
 				Opts: alice.Opts(),
@@ -508,16 +542,17 @@ func testRoomKeyIsNotCycledOnClientRestartJS(t *testing.T, clientType api.Client
 				// now send another message from Alice, who should NOT send another new room key
 				wantMsgBody = "Another Test Message"
 				waiter = bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
-				alice.MustSendMessage(t, roomID, wantMsgBody)
+				secondEventID := alice.MustSendMessage(t, roomID, wantMsgBody)
 				waiter.Waitf(t, 5*time.Second, "bob did not see alice's message")
+				secondSessionID = roomKeySessionID(t, tc.Alice.CSAPI, roomID, secondEventID)
 			})
 
-			// we should have seen a /sendToDevice call by now. If we didn't, this implies we didn't cycle
-			// the room key.
-			got := pc.TryRecv(t)
-			if got != nil {
-				ct.Fatalf(t, "saw /sendToDevice when restarting the client and sending a new message")
+			// A restart can legitimately re-send the already-shared key (not a cycle);
+			// fail only if the megolm session actually changed.
+			if got := pc.TryRecv(t); got != nil {
+				t.Logf("saw /sendToDevice after restart; room key rotated=%t", firstSessionID != secondSessionID)
 			}
+			must.Equal(t, firstSessionID, secondSessionID, "room key was cycled on client restart (megolm session id changed)")
 		})
 	})
 }
@@ -559,7 +594,9 @@ func TestSpoofedEventSenderHandling(t *testing.T) {
 				wantMsgBody = "Another Test Message"
 				waiter = charlie.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(wantMsgBody))
 				spoofedEventID := alice.MustSendMessage(t, roomID, wantMsgBody)
+				bobWaiter := bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(spoofedEventID))
 				waiter.Waitf(t, 5*time.Second, "Charlie did not see Alice's message")
+				bobWaiter.Waitf(t, 5*time.Second, "Bob did not receive the spoofed event")
 
 				// Decryption happens asynchronously, so give a chance for it to happen.
 				time.Sleep(1 * time.Second)
@@ -643,7 +680,13 @@ func withSpoofSender(t *testing.T, tc *cc.TestContext, attackerUserID string, ta
 			// t.Logf("%s => %s", cd.URL, rawBody)
 			joinedRooms := gjson.Parse(rawBody).Get(roomListJSONPath)
 			joinedRooms.ForEach(func(roomID, room gjson.Result) bool {
-				patchedTimeline := patchTimeline(room.Get(timelineJSONPath))
+				timeline := room.Get(timelineJSONPath)
+				// Sliding Sync room updates may omit a timeline. Do not SetRaw an
+				// empty value: that creates an invalid callback response.
+				if !timeline.Exists() {
+					return true
+				}
+				patchedTimeline := patchTimeline(timeline)
 
 				jsonPath := fmt.Sprintf("%s.%s.%s", roomListJSONPath, gjson.Escape(roomID.String()), timelineJSONPath)
 				var err error

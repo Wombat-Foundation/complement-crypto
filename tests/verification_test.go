@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -58,9 +59,6 @@ func (s *verificationStatus) attemptVerification(t *testing.T) {
 // happy case test of Alice verifying one of her devices.
 func TestVerificationSAS(t *testing.T) {
 	Instance().ClientTypeMatrix(t, func(t *testing.T, verifierClientType, verifieeClientType api.ClientType) {
-		if verifieeClientType.Lang == api.ClientTypeRust {
-			t.Skipf("rust cannot be a verifiee yet, see https://github.com/matrix-org/matrix-rust-sdk/issues/3595")
-		}
 		tc := Instance().CreateTestContext(t, verifierClientType)
 		verifieeUser := &cc.User{
 			CSAPI:      tc.Alice.CSAPI,
@@ -81,9 +79,17 @@ func TestVerificationSAS(t *testing.T) {
 				verifiee.Logf(t, "Verifiee (RECEIVER) %s %s", verifieeClientType.Lang, verifiee.Opts().DeviceID)
 				verifieeStage := verifiee.ListenForVerificationRequests(t)
 				verifierStage := verifier.RequestOwnUserVerification(t)
-				for {
+				var lastReceiver, lastSender string
+				timeout := time.NewTimer(30 * time.Second)
+				defer timeout.Stop()
+				for verifieeStage != nil || verifierStage != nil {
 					select {
-					case receiverStage := <-verifieeStage:
+					case receiverStage, ok := <-verifieeStage:
+						if !ok {
+							verifieeStage = nil
+							continue
+						}
+						lastReceiver = fmt.Sprintf("%T", receiverStage)
 						switch stage := receiverStage.(type) {
 						case api.VerificationStageRequestedReceiver:
 							t.Logf("[RECEIVER] VerificationStageRequestedReceiver: %+v", stage.Request())
@@ -109,7 +115,12 @@ func TestVerificationSAS(t *testing.T) {
 						case api.VerificationStageCancelled: // should not be cancelled
 							ct.Errorf(t, "[RECEIVER] VerificationStageCancelled")
 						}
-					case senderStage := <-verifierStage:
+					case senderStage, ok := <-verifierStage:
+						if !ok {
+							verifierStage = nil
+							continue
+						}
+						lastSender = fmt.Sprintf("%T", senderStage)
 						switch stage := senderStage.(type) {
 						case api.VerificationStageRequestedReceiver: // the verifier should not get a requestee state
 							ct.Errorf(t, "[SENDER]   VerificationStageRequestedReceiver: %+v", stage.Request())
@@ -135,8 +146,14 @@ func TestVerificationSAS(t *testing.T) {
 						case api.VerificationStageCancelled: // should not be cancelled
 							ct.Errorf(t, "[SENDER]   VerificationStageCancelled")
 						}
-					case <-time.After(5 * time.Second):
-						ct.Fatalf(t, "timed out after 5s")
+					// 30s rather than 5s: the handshake itself runs in ~5-10s isolated,
+					// but under 4-way shard contention the to-device round-trips are
+					// starved past 5s (the {rust}|{js} combo passes isolated at 5.6s and
+					// only fails sharded). This is a real correctness wait, not masking a
+					// hang: a genuine handshake failure still trips DidFail/DidCancel and
+					// arrives as VerificationStageCancelled, not a timeout.
+					case <-timeout.C:
+						ct.Fatalf(t, "timed out after 30s waiting for verification stages (last receiver=%s, last sender=%s)", lastReceiver, lastSender)
 						return
 					}
 				}

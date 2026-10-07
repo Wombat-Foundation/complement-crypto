@@ -10,7 +10,7 @@
   "license": "Apache-2.0",
   "dependencies": {
     "buffer": "^6.0.3",
-    "matrix-js-sdk": "^41.0.0",
+    "matrix-js-sdk": "https://gitlab.com/Wombat-Foundation/matrix-js-sdk#ba48cf7c768996e17b90d9565109f1ea837b5eea",
     "vite": "^6.4.3"
   },
   "packageManager": "yarn@1.22.22"

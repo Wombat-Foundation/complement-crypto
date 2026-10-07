@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,7 +24,7 @@ import (
 
 // LogTarget is the name of the `target` we use in logToFile: it is in effect a fake "crate" that we tell the
 // rust-sdk is producing the logs.
-const LogTarget = "complement_crypto";
+const LogTarget = "complement_crypto"
 
 func DeleteOldLogs(prefix string) {
 	// delete old log files
@@ -39,7 +40,7 @@ func SetupLogs(prefix string) {
 	// log new files
 	matrix_sdk_ffi.InitPlatform(matrix_sdk_ffi.TracingConfiguration{
 		LogLevel:              matrix_sdk_ffi.LogLevelTrace,
-		ExtraTargets:          []string {LogTarget},
+		ExtraTargets:          []string{LogTarget},
 		WriteToStdoutOrSystem: false,
 		WriteToFiles: &matrix_sdk_ffi.TracingFileConfiguration{
 			Path:       "./logs",
@@ -77,10 +78,18 @@ type RustClient struct {
 	allRooms              *matrix_sdk_ffi.RoomList
 	rooms                 map[string]*RustRoomInfo
 	roomsMu               *sync.RWMutex
+	subMu                 *sync.Mutex
+	subscribed            map[string]struct{}
 	userID                string
 	persistentStoragePath string
 	opts                  api.ClientCreationOpts
 	closed                *atomic.Bool
+
+	// Session verification plumbing. Detached in Close so SDK callbacks cannot
+	// call into a finished test: the delegate logs, and the state listener holds
+	// its own reference, both of which fire on the SDK runtime.
+	verificationController    *matrix_sdk_ffi.SessionVerificationController
+	verificationStateListener *matrix_sdk_ffi.TaskHandle
 
 	// for push notification tests (single/multi-process)
 	notifClient *matrix_sdk_ffi.NotificationClient
@@ -104,11 +113,12 @@ func NewRustClient(t ct.TestLike, opts api.ClientCreationOpts) (api.Client, erro
 	xprocessName := opts.GetExtraOption(CrossProcessStoreLocksHolderName, "").(string)
 	if xprocessName != "" {
 		t.Logf("setting cross process store locks holder name=%s", xprocessName)
-		ab = ab.CrossProcessLockConfig(matrix_sdk_ffi.CrossProcessLockConfigMultiProcess { xprocessName })
+		ab = ab.CrossProcessLockConfig(matrix_sdk_ffi.CrossProcessLockConfigMultiProcess{xprocessName})
 	}
 
 	// @alice:hs1, FOOBAR => alice_hs1_FOOBAR
 	username := strings.Replace(opts.UserID[1:], ":", "_", -1) + "_" + opts.DeviceID
+
 	sessionPath := "rust_storage/" + username
 	storeKey := []byte("my_secret_thirty-two_byte_string")
 	ab = ab.SqliteStore(
@@ -126,6 +136,8 @@ func NewRustClient(t ct.TestLike, opts api.ClientCreationOpts) (api.Client, erro
 		roomsListener:         NewRoomsListener(),
 		rooms:                 make(map[string]*RustRoomInfo),
 		roomsMu:               &sync.RWMutex{},
+		subMu:                 &sync.Mutex{},
+		subscribed:            make(map[string]struct{}),
 		opts:                  opts,
 		persistentStoragePath: "./rust_storage/" + username,
 		closed:                &atomic.Bool{},
@@ -236,9 +248,14 @@ func (c *RustClient) Login(t ct.TestLike, opts api.ClientCreationOpts) error {
 	if opts.DeviceID != "" {
 		deviceID = &opts.DeviceID
 	}
-	err := c.FFIClient.Login(opts.UserID, opts.Password, nil, deviceID)
-	if err != nil {
-		return fmt.Errorf("Client.Login failed: %s", err)
+	// NewRustClient restores the session before returning when AccessToken is
+	// supplied. Calling Login again on that client fails with
+	// AlreadyInitializedError, which breaks persistent-storage restarts.
+	if opts.AccessToken == "" {
+		err := c.FFIClient.Login(opts.UserID, opts.Password, nil, deviceID)
+		if err != nil {
+			return fmt.Errorf("Client.Login failed: %s", err)
+		}
 	}
 	// let the client upload device keys and one-time keys
 	e := c.FFIClient.Encryption()
@@ -258,67 +275,124 @@ func (c *RustClient) CurrentAccessToken(t ct.TestLike) string {
 	return s.AccessToken
 }
 
+// newSessionVerificationDelegate wires up the shared plumbing for a session
+// verification flow: the container's send functions, the controller delegate,
+// and the verification state listener (so Done stages carry VerificationState).
+//
+// Only one delegate exists per controller, so a client cannot listen for an
+// incoming request and hold an outgoing request at the same time. isVerifiee
+// selects the direction: the incoming side surfaces DidReceiveVerificationRequest
+// as a stage, while the outgoing side ignores its own re-received request.
+//
+// The send functions intentionally mirror the FFI controller surface (ack /
+// accept-request / start / approve / decline / cancel). There are no
+// receiver-side "accept SAS" or "done" calls: the SDK auto-accepts the SAS and
+// starts listening as soon as the request transitions (session_verification.rs),
+// and emits DidFinish when it completes.
+func (c *RustClient) newSessionVerificationDelegate(
+	t ct.TestLike,
+	svc *matrix_sdk_ffi.SessionVerificationController,
+	vreq api.VerificationRequest,
+	isVerifiee bool,
+) (*api.VerificationContainer, chan api.VerificationStage, *SessionVerificationControllerDelegate) {
+	// we need to support multiple transition stages firing at once
+	ch := make(chan api.VerificationStage, 4)
+	container := &api.VerificationContainer{
+		Mutex: &sync.Mutex{},
+		VReq:  vreq,
+	}
+	container.SendReady = func() {
+		// The incoming request is only known once DidReceiveVerificationRequest
+		// fires, so snapshot it under the lock rather than reading VReq directly.
+		var senderUserID, txnID string
+		container.Modify(func(cc *api.VerificationContainer) {
+			senderUserID = cc.VReq.SenderUserID
+			txnID = cc.VReq.TxnID
+		})
+		if err := svc.AcknowledgeVerificationRequest(senderUserID, txnID); err != nil {
+			ct.Errorf(t, "failed to AcknowledgeVerificationRequest: %s", err)
+			return
+		}
+		if err := svc.AcceptVerificationRequest(); err != nil {
+			ct.Errorf(t, "failed to AcceptVerificationRequest: %s", err)
+		}
+	}
+	container.SendStart = func(method string) {
+		if method != "m.sas.v1" {
+			ct.Errorf(t, "session verification Start: method chosen must be m.sas.v1")
+			return
+		}
+		if err := svc.StartSasVerification(); err != nil {
+			ct.Errorf(t, "failed to StartSasVerification: %s", err)
+		}
+	}
+	container.SendApprove = func() {
+		if err := svc.ApproveVerification(); err != nil {
+			ct.Errorf(t, "failed to ApproveVerification: %s", err)
+		}
+	}
+	container.SendDecline = func() {
+		if err := svc.DeclineVerification(); err != nil {
+			ct.Errorf(t, "failed to DeclineVerification: %s", err)
+		}
+	}
+	container.SendCancel = func() {
+		if err := svc.CancelVerification(); err != nil {
+			ct.Errorf(t, "failed to CancelVerification: %s", err)
+		}
+	}
+	container.SendTransition = func() {
+		// no-op: the FFI auto-accepts the SAS when the request transitions.
+	}
+	container.SendDone = func() {
+		// no-op: the FFI emits DidFinish when the SAS verification completes.
+	}
+
+	delegateImpl := &SessionVerificationControllerDelegate{
+		t:          t,
+		controller: svc,
+		container:  container,
+		ch:         ch,
+		isVerifiee: isVerifiee,
+	}
+	c.verificationController = svc
+	c.verificationStateListener = c.FFIClient.Encryption().VerificationStateListener(delegateImpl)
+	var delegate matrix_sdk_ffi.SessionVerificationControllerDelegate = delegateImpl
+	svc.SetDelegate(&delegate)
+	return container, ch, delegateImpl
+}
+
 func (c *RustClient) ListenForVerificationRequests(t ct.TestLike) chan api.VerificationStage {
-	return nil // TODO rust cannot be a verifiee yet, see https://github.com/matrix-org/matrix-rust-sdk/issues/3595
+	c.FFISpan.Enter()
+	defer c.FFISpan.Exit()
+
+	t.Helper()
+	svc, err := c.FFIClient.GetSessionVerificationController()
+	if err != nil {
+		ct.Fatalf(t, "GetSessionVerificationController: %s", err)
+	}
+	_, ch, _ := c.newSessionVerificationDelegate(t, svc, api.VerificationRequest{
+		ReceiverUserID:   c.userID,
+		ReceiverDeviceID: c.opts.DeviceID,
+	}, true)
+	return ch
 }
 
 func (c *RustClient) RequestOwnUserVerification(t ct.TestLike) chan api.VerificationStage {
 	c.FFISpan.Enter()
 	defer c.FFISpan.Exit()
 
+	t.Helper()
 	svc, err := c.FFIClient.GetSessionVerificationController()
 	if err != nil {
 		ct.Fatalf(t, "GetSessionVerificationController: %s", err)
 	}
-
-	container := &api.VerificationContainer{
-		Mutex: &sync.Mutex{},
-		VReq: api.VerificationRequest{
-			SenderUserID:   c.userID,
-			SenderDeviceID: c.opts.DeviceID,
-			ReceiverUserID: c.userID,
-			TxnID:          "unknown",
-		},
-		SendCancel: func() {
-			if err := svc.CancelVerification(); err != nil {
-				ct.Errorf(t, "failed to CancelVerification: %s", err)
-			}
-		},
-		SendStart: func(method string) {
-			if method != "m.sas.v1" {
-				ct.Errorf(t, "RequestOwnUserVerification.Start: method chosen must be m.sas.v1")
-				return
-			}
-			if err := svc.StartSasVerification(); err != nil {
-				ct.Errorf(t, "failed to StartSasVerification: %s", err)
-			}
-		},
-		SendApprove: func() {
-			if err := svc.ApproveVerification(); err != nil {
-				ct.Errorf(t, "failed to ApproveVerification: %s", err)
-			}
-		},
-		SendDecline: func() {
-			if err := svc.DeclineVerification(); err != nil {
-				ct.Errorf(t, "failed to ApproveVerification: %s", err)
-			}
-		},
-		SendTransition: func() {
-			// no-op, other clients need this step.
-		},
-	}
-	// need to allow multiple Transition calls to be fired at once
-	ch := make(chan api.VerificationStage, 4)
-	delegateImpl := &SessionVerificationControllerDelegate{
-		t:          t,
-		controller: svc,
-		container:  container,
-		ch:         ch,
-	}
-	c.FFIClient.Encryption().VerificationStateListener(delegateImpl)
-
-	var delegate matrix_sdk_ffi.SessionVerificationControllerDelegate = delegateImpl
-	svc.SetDelegate(&delegate)
+	container, ch, _ := c.newSessionVerificationDelegate(t, svc, api.VerificationRequest{
+		SenderUserID:   c.userID,
+		SenderDeviceID: c.opts.DeviceID,
+		ReceiverUserID: c.userID,
+		TxnID:          "unknown",
+	}, false)
 	if err = svc.RequestDeviceVerification(); err != nil {
 		ct.Fatalf(t, "RequestDeviceVerification: %s", err)
 	}
@@ -368,6 +442,18 @@ func (c *RustClient) Close(t ct.TestLike) {
 	if c.entriesAdapters != nil {
 		c.entriesAdapters.Destroy()
 		c.entriesAdapters = nil
+	}
+	// Detach verification before destroying the client: the delegate logs, and a
+	// late DidFinish/DidCancel/DidFail would otherwise panic by logging after the
+	// test has completed. The state listener holds its own delegate reference, so
+	// cancel it too.
+	if c.verificationController != nil {
+		c.verificationController.SetDelegate(nil)
+		c.verificationController = nil
+	}
+	if c.verificationStateListener != nil {
+		c.verificationStateListener.Cancel()
+		c.verificationStateListener = nil
 	}
 	c.FFIClient.Destroy()
 	c.FFIClient = nil
@@ -582,8 +668,23 @@ func (c *RustClient) SubscribeToRoom(t ct.TestLike, roomID string) error {
 	if c.syncService == nil {
 		return fmt.Errorf("cannot subscribe to room %s: StartSyncing not yet called", roomID)
 	}
-	if err := c.syncService.RoomListService().SetRoomSubscriptions([]string{roomID}); err != nil {
-		return fmt.Errorf("cannot subscribe to room %s: %s", roomID, err)
+	c.subMu.Lock()
+	c.subscribed[roomID] = struct{}{}
+	roomIDs := make([]string, 0, len(c.subscribed))
+	for id := range c.subscribed {
+		roomIDs = append(roomIDs, id)
+	}
+	sort.Strings(roomIDs)
+
+	// SetRoomSubscriptions replaces the whole subscription set, so always send
+	// the cumulative set of rooms requested by this client. Keep the mutex held
+	// through the SDK call so concurrent callers cannot apply an older snapshot
+	// after a newer one. On failure, retain the requested room so a later call
+	// retries the complete desired set.
+	err := c.syncService.RoomListService().SetRoomSubscriptions(roomIDs)
+	c.subMu.Unlock()
+	if err != nil {
+		return fmt.Errorf("cannot set subscriptions (adding %s): %s", roomID, err)
 	}
 	return nil
 }
@@ -674,11 +775,15 @@ func (c *RustClient) Type() api.ClientTypeLang {
 	return api.ClientTypeRust
 }
 
-func (c *RustClient) SendMessage(t ct.TestLike, roomID, text string) (eventID string, err error) {
+func (c *RustClient) SendMessage(t ct.TestLike, roomID, text string, timeout ...time.Duration) (eventID string, err error) {
 	c.FFISpan.Enter()
 	defer c.FFISpan.Exit()
 
 	t.Helper()
+	waitFor := 11 * time.Second
+	if len(timeout) > 0 {
+		waitFor = timeout[0]
+	}
 	var isChannelClosed atomic.Bool
 	ch := make(chan bool)
 	// we need a timeline listener before we can send messages, AND that listener must be attached to the
@@ -722,8 +827,8 @@ func (c *RustClient) SendMessage(t ct.TestLike, roomID, text string) (eventID st
 	}
 	timeline.Send(matrix_sdk_ffi.MessageEventContentFromHtml(text, text))
 	select {
-	case <-time.After(11 * time.Second):
-		err = fmt.Errorf("SendMessage(rust) %s: timed out after 11s", c.userID)
+	case <-time.After(waitFor):
+		err = fmt.Errorf("SendMessage(rust) %s: timed out after %s", c.userID, waitFor)
 		return
 	case <-ch:
 		return
@@ -828,7 +933,7 @@ func (c *RustClient) Logf(t ct.TestLike, format string, args ...interface{}) {
 func (c *RustClient) logToFile(t ct.TestLike, format string, args ...interface{}) {
 	c.FFISpan.Enter()
 	defer c.FFISpan.Exit()
-	matrix_sdk_ffi.LogEvent("rust.go", &zero, matrix_sdk_ffi.LogLevelInfo, LogTarget + "::" + t.Name(), fmt.Sprintf(format, args...))
+	matrix_sdk_ffi.LogEvent("rust.go", &zero, matrix_sdk_ffi.LogLevelInfo, LogTarget+"::"+t.Name(), fmt.Sprintf(format, args...))
 }
 
 func (c *RustClient) ensureListening(t ct.TestLike, roomID string) {
@@ -860,6 +965,22 @@ func (c *RustClient) ensureListening(t ct.TestLike, roomID string) {
 	info := c.rooms[roomID]
 	if info != nil && info.stream != nil {
 		return
+	}
+
+	// Without an explicit room subscription, the sliding sync `pos` for this room
+	// only ever advances via whatever small timeline_limit the "all rooms" list
+	// uses for previews (e.g. 1-10). That's fine when events trickle in one at a
+	// time, but under concurrent load a burst of room state (joins, membership
+	// changes) plus messages can exceed that window in a single poll; the server
+	// correctly reports `limited: true` with a `prev_batch` pointing before the
+	// gap, but nothing here ever triggers backpagination to close it, so a
+	// message that fell into the truncated portion is silently never delivered.
+	// Subscribing before we start consuming the timeline requests a much larger
+	// window (SDK default: 20) on every subsequent poll for this room, giving
+	// real headroom so this doesn't happen in the first place - this mirrors
+	// what a real client does when a room is actually open/visible.
+	if err := c.SubscribeToRoom(t, roomID); err != nil {
+		c.Logf(t, "[%s]ensureListening[%s] failed to subscribe to room: %s", c.userID, roomID, err)
 	}
 
 	c.Logf(t, "[%s]AddTimelineListener[%s]", c.userID, roomID)
@@ -935,6 +1056,22 @@ func (c *RustClient) ensureListening(t ct.TestLike, roomID string) {
 				ev := timelineItemToEvent(x.Value)
 				timeline = slices.Insert(timeline, 0, ev)
 				newEvents = append(newEvents, ev)
+			case matrix_sdk_ffi.TimelineDiffClear:
+				timeline = make([]*api.Event, 0)
+				c.logToFile(t, "[%s]_______ CLEAR", c.userID)
+			case matrix_sdk_ffi.TimelineDiffPopFront:
+				if len(timeline) > 0 {
+					timeline = slices.Delete(timeline, 0, 1)
+				}
+			case matrix_sdk_ffi.TimelineDiffPopBack:
+				if len(timeline) > 0 {
+					timeline = slices.Delete(timeline, len(timeline)-1, len(timeline))
+				}
+			case matrix_sdk_ffi.TimelineDiffTruncate:
+				n := int(x.Length)
+				if n < len(timeline) {
+					timeline = timeline[:n]
+				}
 			default:
 				t.Logf("Unhandled TimelineDiff change %v", d)
 			}
@@ -1125,21 +1262,38 @@ type SessionVerificationControllerDelegate struct {
 	controller *matrix_sdk_ffi.SessionVerificationController
 	container  *api.VerificationContainer
 	ch         chan api.VerificationStage
+	// isVerifiee is set for the incoming (receiver) side so that an incoming
+	// request is surfaced as a stage. The outgoing (verifier) side re-receives
+	// its own request and must ignore it, matching the JS behaviour.
+	isVerifiee bool
 }
 
 func (s *SessionVerificationControllerDelegate) DidReceiveVerificationRequest(details matrix_sdk_ffi.SessionVerificationRequestDetails) {
-	// we're not currently testing incoming session verification requests
+	s.t.Logf("SessionVerificationControllerDelegate.DidReceiveVerificationRequest: sender=%s device=%s flow=%s verifiee=%t",
+		details.SenderProfile.UserId, details.DeviceId, details.FlowId, s.isVerifiee)
+	if !s.isVerifiee {
+		return
+	}
+	s.container.Modify(func(cc *api.VerificationContainer) {
+		cc.VReq.SenderUserID = details.SenderProfile.UserId
+		cc.VReq.SenderDeviceID = details.DeviceId
+		cc.VReq.TxnID = details.FlowId
+	})
+	s.ch <- api.NewVerificationStageRequestedReceiver(s.container)
 }
 
 func (s *SessionVerificationControllerDelegate) DidAcceptVerificationRequest() {
+	s.t.Logf("SessionVerificationControllerDelegate.DidAcceptVerificationRequest")
 	s.ch <- api.NewVerificationStageReady(s.container)
 }
 
 func (s *SessionVerificationControllerDelegate) DidStartSasVerification() {
+	s.t.Logf("SessionVerificationControllerDelegate.DidStartSasVerification")
 	s.ch <- api.NewVerificationStageStart(s.container)
 }
 
 func (s *SessionVerificationControllerDelegate) DidReceiveVerificationData(data matrix_sdk_ffi.SessionVerificationData) {
+	s.t.Logf("SessionVerificationControllerDelegate.DidReceiveVerificationData")
 	vData := api.VerificationData{}
 	switch d := data.(type) {
 	case matrix_sdk_ffi.SessionVerificationDataEmojis:
@@ -1158,14 +1312,20 @@ func (s *SessionVerificationControllerDelegate) DidReceiveVerificationData(data 
 }
 
 func (s *SessionVerificationControllerDelegate) DidFail() {
+	// Terminal: the SDK only calls this on genuine failure paths (start_sas
+	// yielding nothing, or accepting the SAS failing), so emit a terminal stage
+	// rather than leaving the test to time out with no signal.
 	s.t.Logf("SessionVerificationControllerDelegate.DidFail")
+	s.ch <- api.NewVerificationStageCancelled(s.container)
 }
 
 func (s *SessionVerificationControllerDelegate) DidCancel() {
+	s.t.Logf("SessionVerificationControllerDelegate.DidCancel")
 	s.ch <- api.NewVerificationStageCancelled(s.container)
 }
 
 func (s *SessionVerificationControllerDelegate) DidFinish() {
+	s.t.Logf("SessionVerificationControllerDelegate.DidFinish")
 	s.ch <- api.NewVerificationStageDone(s.container)
 }
 

@@ -1,4 +1,5 @@
 .DS_Store
+.tmp/
 logs
 js-sdk/node_modules
 js-sdk/dist
@@ -15,3 +16,5 @@ __pycache__
 /tests/chromedp/
 /tests/rust_storage/
 _temp_rust_sdk
+# Locally-built cmd/rpc binary (COMPLEMENT_CRYPTO_RPC_BINARY target) - machine/toolchain-specific.
+/rpc

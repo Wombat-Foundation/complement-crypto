@@ -42,7 +42,7 @@ func NewServer(doneChannel chan struct{}) *Server {
 		waitersMu:     &sync.Mutex{},
 		lastCmdRecv:   time.Now(),
 		lastCmdRecvMu: &sync.Mutex{},
-		done: doneChannel,
+		done:          doneChannel,
 	}
 	go srv.checkKeepAlive()
 	return srv
@@ -156,12 +156,19 @@ type RPCSendMessage struct {
 	TestName string
 	RoomID   string
 	Text     string
+	// Timeout overrides the client's default wait-for-local-echo timeout when
+	// non-zero. See api.Client.SendMessage's doc comment.
+	Timeout time.Duration
 }
 
 func (s *Server) SendMessage(msg RPCSendMessage, eventID *string) error {
 	defer s.keepAlive()
 	var err error
-	*eventID, err = s.activeClient.SendMessage(&api.MockT{TestName: msg.TestName}, msg.RoomID, msg.Text)
+	var opts []time.Duration
+	if msg.Timeout > 0 {
+		opts = append(opts, msg.Timeout)
+	}
+	*eventID, err = s.activeClient.SendMessage(&api.MockT{TestName: msg.TestName}, msg.RoomID, msg.Text, opts...)
 	if err != nil {
 		return err
 	}

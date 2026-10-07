@@ -46,6 +46,15 @@ func TestNewUserCannotGetKeysForOfflineServer(t *testing.T) {
 
 			// now bob's HS becomes unreachable
 			tc.Deployment.PauseServer(t, "hs2")
+			// PauseServer pauses the shared deployment's container, so a fatal before
+			// the explicit unpause below would leave hs2 down and poison every later
+			// test in this shard. Restore it on the way out if we didn't.
+			paused := true
+			t.Cleanup(func() {
+				if paused {
+					tc.Deployment.UnpauseServer(t, "hs2")
+				}
+			})
 
 			// C now joins the room
 			tc.Alice.MustInviteRoom(t, roomID, tc.Charlie.UserID)
@@ -66,6 +75,7 @@ func TestNewUserCannotGetKeysForOfflineServer(t *testing.T) {
 
 				// now bob's server comes back online
 				tc.Deployment.UnpauseServer(t, "hs2")
+				paused = false
 
 				// now we need to wait a bit for charlie's client to decide to hit /keys/claim again.
 				// If the client hits too often, there will be constantly send lag so long as bob's HS is offline.
@@ -139,6 +149,15 @@ func TestExistingSessionCannotGetKeysForOfflineServer(t *testing.T) {
 
 			// now bob's HS becomes unreachable
 			tc.Deployment.PauseServer(t, "hs2")
+			// PauseServer pauses the shared deployment's container, so a fatal before
+			// the explicit unpause below would leave hs2 down and poison every later
+			// test in this shard. Restore it on the way out if we didn't.
+			paused := true
+			t.Cleanup(func() {
+				if paused {
+					tc.Deployment.UnpauseServer(t, "hs2")
+				}
+			})
 
 			// C now joins the room ab
 			tc.Alice.MustInviteRoom(t, roomIDab, tc.Charlie.UserID)
@@ -157,6 +176,7 @@ func TestExistingSessionCannotGetKeysForOfflineServer(t *testing.T) {
 
 			// now bob's server comes back online
 			tc.Deployment.UnpauseServer(t, "hs2")
+			paused = false
 
 			waiter = bob.WaitUntilEventInRoom(t, roomIDab, api.CheckEventHasBody(wantDecryptableMsgBody))
 			waiter.Waitf(t, 10*time.Second, "bob did not see charlie's message: '%s'", wantDecryptableMsgBody) // longer time to allow for retries

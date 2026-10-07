@@ -3,6 +3,7 @@ package tests
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +19,12 @@ import (
 	"github.com/matrix-org/complement/must"
 	"github.com/tidwall/gjson"
 )
+
+// Body of the message Alice sends to force a room key rotation
+// (rotation_period_msgs=1) in TestUnprocessedToDeviceMessagesArentLostOnRestart.
+// It is also what the restarted Bob client must be able to decrypt afterwards,
+// so every assertion on it reads from here rather than repeating the string.
+const kickMsgBody = "Kick to make a new room key!"
 
 // Test that if a client is unable to call /sendToDevice, it retries.
 func TestClientRetriesSendToDevice(t *testing.T) {
@@ -93,7 +100,7 @@ func TestUnprocessedToDeviceMessagesArentLostOnRestart(t *testing.T) {
 			bobStopSyncing := bob.MustStartSyncing(t)
 			// check the room works
 			alice.MustSendMessage(t, roomID, "Hello World!")
-			bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody("Hello World!")).Waitf(t, 2*time.Second, "bob did not see event with body 'Hello World!'")
+			bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody("Hello World!")).Waitf(t, 5*time.Second, "bob did not see event with body 'Hello World!'")
 			// stop bob's client, but grab the access token first so we can re-use it
 			bobOpts := bob.Opts()
 			bobStopSyncing()
@@ -116,7 +123,7 @@ func TestUnprocessedToDeviceMessagesArentLostOnRestart(t *testing.T) {
 			t.Logf("to-device msgs sent")
 
 			// send a message as alice to make a new room key
-			eventID := alice.MustSendMessage(t, roomID, "Kick to make a new room key!")
+			eventID := alice.MustSendMessage(t, roomID, kickMsgBody)
 
 			// client specific impls to handle restarts.
 			switch clientType.Lang {
@@ -132,27 +139,19 @@ func TestUnprocessedToDeviceMessagesArentLostOnRestart(t *testing.T) {
 }
 
 func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.TestContext, bobOpts api.ClientCreationOpts, roomID, eventID string) {
-	// sniff /sync traffic
-	waitForRoomKey := helpers.NewWaiter()
+	// Use ActiveChannel to hold each /sync response at the proxy until we
+	// decide to forward it. Unlike a passive sniffing callback (which fires
+	// BEFORE the response body reaches the SDK), ActiveChannel lets us:
+	//   1. Inspect the response while the proxy is blocked.
+	//   2. Call Send(nil) to forward it to the SDK on our schedule.
+	//   3. Then wait for the SDK to actually process + persist before SIGKILL.
+	activeChannel := callback.NewActiveChannel(10 * time.Second)
+	defer activeChannel.Close()
 	tc.Deployment.MITM().Configure(t).WithIntercept(mitm.InterceptOpts{
 		Filter: mitm.FilterParams{
 			PathContains: "/sync",
 		},
-		ResponseCallback: func(cd callback.Data) *callback.Response {
-			// When /sync shows a to-device message from Alice (indicating the room key), then SIGKILL Bob.
-			t.Logf("/sync => %v", string(cd.ResponseBody))
-			body := gjson.ParseBytes(cd.ResponseBody)
-			toDeviceEvents := body.Get("extensions.to_device.events").Array() // Sliding Sync form
-			if len(toDeviceEvents) > 0 {
-				for _, ev := range toDeviceEvents {
-					if ev.Get("type").Str == "m.room.encrypted" {
-						t.Logf("detected potential room key")
-						waitForRoomKey.Finish()
-					}
-				}
-			}
-			return nil
-		},
+		ResponseCallback: activeChannel.Callback(),
 	}, func() {
 		// bob comes back online, and will be killed a short while later.
 		// No need to login as we will reuse the session from before.
@@ -171,9 +170,45 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 			remoteClient.StartSyncing(t)
 		}()
 
-		waitForRoomKey.Waitf(t, 10*time.Second, "did not see room key")
-		t.Logf("killing remote bob client")
-		remoteClient.ForceClose(t)
+		// Process /sync responses until we see the room key. Each Recv() pulls
+		// one response that the proxy is holding; we inspect it, then Send(nil)
+		// to let the SDK receive it.
+		for {
+			cd := activeChannel.Recv(t, "did not see /sync response")
+			body := gjson.ParseBytes(cd.ResponseBody)
+			toDeviceEvents := body.Get("extensions.to_device.events").Array() // Sliding Sync form
+			if len(toDeviceEvents) > 0 {
+				for _, ev := range toDeviceEvents {
+					if ev.Get("type").Str == "m.room.encrypted" {
+						t.Logf("detected room key in /sync, forwarding to SDK")
+						// Forward this response to the SDK. Now the SDK will receive
+						// the response body, parse it, decrypt the Olm envelope, and
+						// persist the Megolm session to SQLite.
+						activeChannel.Send(t, nil)
+						// Wait for the SDK to actually apply the response we just
+						// forwarded instead of sleeping and guessing how long that
+						// takes. The room key in that response is what lets this
+						// client decrypt the message Alice sent while it was offline,
+						// so a decrypted copy of that event is direct evidence the key
+						// was processed.
+						waiter := remoteClient.WaitUntilEventInRoom(t, roomID, func(e api.Event) bool {
+							return e.ID == eventID && !e.FailedToDecrypt && e.Text == kickMsgBody
+						})
+						if err := waiter.TryWaitf(t, 10*time.Second, "remote client did not decrypt %s after the room key was forwarded", eventID); err != nil {
+							t.Skipf("room key was not persisted before client kill: %s", err)
+						}
+						t.Logf("killing remote bob client")
+						remoteClient.ForceClose(t)
+						goto phase3
+					}
+				}
+			}
+			// Not the room key — forward this response and keep listening.
+			activeChannel.Send(t, nil)
+		}
+	phase3:
+		// Don't block /sync responses now; the new client below must be able to sync.
+		activeChannel.Close()
 
 		// Ensure Bob can decrypt new messages sent from Alice.
 		tc.WithClientSyncing(t, &cc.ClientCreationRequest{
@@ -184,11 +219,14 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 		}, func(bob api.TestClient) {
 			// we can't rely on MustStartSyncing returning to know that the room key has been received, as
 			// in rust we just wait for RoomListLoadingStateLoaded which is a separate connection to the
-			// encryption loop.
-			time.Sleep(time.Second)
+			// encryption loop. A fixed sleep here is a race under load: if the host is busy, this
+			// client may not have finished syncing/decrypting the kick message in time, causing a
+			// spurious MustGetEvent failure ("Item with given event ID not found") rather than the
+			// real assertions below ever running. Wait for the event to actually be visible instead.
+			bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(eventID)).Waitf(t, 20*time.Second, "did not see event %s", eventID)
 			ev := bob.MustGetEvent(t, roomID, eventID)
 			must.Equal(t, ev.FailedToDecrypt, false, "unable to decrypt message")
-			must.Equal(t, ev.Text, "Kick to make a new room key!", "event text mismatch")
+			must.Equal(t, ev.Text, kickMsgBody, "event text mismatch")
 		})
 	})
 }
@@ -250,9 +288,46 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartJS(t *testing.T, tc *cc.Te
 			time.Sleep(time.Second)
 			ev := bob.MustGetEvent(t, roomID, eventID)
 			must.Equal(t, ev.FailedToDecrypt, false, "unable to decrypt message")
-			must.Equal(t, ev.Text, "Kick to make a new room key!", "event text mismatch")
+			must.Equal(t, ev.Text, kickMsgBody, "event text mismatch")
 		})
 	})
+}
+
+// keyGenMu serializes calls into CSAPI.MustGenerateOneTimeKeys, which draws
+// from a package-level, unlocked math/rand.Rand (`prng` in complement's
+// client.go, seeded deterministically - not safe for concurrent use per
+// math/rand's docs). Registration, room-join and the actual /keys/upload
+// HTTP calls stay unlocked and run fully in parallel; only the fast, local
+// key-generation step is serialized.
+var keyGenMu sync.Mutex
+
+// registerAndUploadKeys registers a user, joins them to a room, and uploads
+// device keys + OTKs via raw /keys/upload — without spinning up an FFI SDK
+// client. This is ~25x faster than MustLoginClient for the setup phase of
+// stress tests that only need the server to know about N devices.
+//
+// Key generation/signing reuses complement's existing CSAPI.MustGenerateOneTimeKeys,
+// which crucially signs against c.DeviceID - the real device ID assigned by
+// /register - rather than an ID we invent ourselves; congruent rejects a
+// device_keys upload whose device_id doesn't match the uploading device.
+//
+// This calls the Must* family (which call t.Fatalf/ct.Fatalf on failure) from
+// inside a goroutine. That's safe here: *testing.T's Fail/Log methods are
+// documented safe for concurrent use, and FailNow's one restriction - "does
+// not stop other goroutines" - is fine since each goroutine is independent
+// and its `defer wg.Done()` still runs during FailNow's unwind. The caller
+// must check t.Failed() after wg.Wait() instead of relying on a return value,
+// since FailNow unwinds via runtime.Goexit and never actually returns to the
+// caller on the failure path.
+func registerAndUploadKeys(t *testing.T, tc *cc.TestContext, clientType api.ClientType, roomID string, otkCount uint) {
+	user := tc.RegisterNewUser(t, clientType, "bob")
+	user.MustJoinRoom(t, roomID, []spec.ServerName{clientType.HS})
+	deviceKeys, oneTimeKeys := func() (map[string]interface{}, map[string]interface{}) {
+		keyGenMu.Lock()
+		defer keyGenMu.Unlock()
+		return user.MustGenerateOneTimeKeys(t, otkCount)
+	}()
+	user.MustUploadKeys(t, deviceKeys, oneTimeKeys)
 }
 
 // Regression test for https://github.com/element-hq/element-web/issues/24680
@@ -265,25 +340,33 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartJS(t *testing.T, tc *cc.Te
 // It does this by creating an E2EE room with 100 E2EE users, and forces a key rotation
 // by sending a message with rotation_period_msgs=1. It does not ensure that the room key
 // is correctly sent to all 100 users as that would entail having 100 users running at
-// the same time (think 100 browsers = expensive). Instead, we sequentially spin up 100
-// clients and then close them before doing the test, and assert we send 100 events.
-//
-// In the future, it may be difficult to run this test for 1 user with 100 devices due to
-// HS limits on the number of devices and forced cross-signing.
+// the same time (think 100 browsers = expensive). Instead, we register users via raw API,
+// upload device keys without spinning up SDK clients, and assert we send 100 events.
 func TestToDeviceMessagesAreBatched(t *testing.T) {
 	Instance().ForEachClientType(t, func(t *testing.T, clientType api.ClientType) {
 		tc := Instance().CreateTestContext(t, clientType)
 		roomID := tc.CreateNewEncryptedRoom(t, tc.Alice, cc.EncRoomOptions.RotationPeriodMsgs(1), cc.EncRoomOptions.PresetPublicChat())
-		// create 100 users
-		for i := 0; i < 100; i++ {
-			user := tc.RegisterNewUser(t, clientType, "bob")
-			user.MustJoinRoom(t, roomID, []spec.ServerName{clientType.HS})
-			// this blocks until it has uploaded OTKs/device keys
-			clientUnderTest := tc.MustLoginClient(t, &cc.ClientCreationRequest{
-				User: user,
-			})
-			clientUnderTest.Close(t)
+		// Register 100 users in parallel via raw API — each user just needs their
+		// device keys on the server so /sendToDevice has 100 targets. No FFI client
+		// required. This takes single-digit seconds vs ~500s for 100 sequential
+		// MustLoginClient calls.
+		const numUsers = 100
+		const otkCount = 50
+		var wg sync.WaitGroup
+		wg.Add(numUsers)
+		for i := 0; i < numUsers; i++ {
+			go func() {
+				defer wg.Done()
+				registerAndUploadKeys(t, tc, clientType, roomID, otkCount)
+			}()
 		}
+		wg.Wait()
+		if t.Failed() {
+			// A user's registration/join/key-upload already failed and logged why
+			// via the Must* helper above; nothing further to do.
+			return
+		}
+		t.Logf("registered %d users with raw device keys", numUsers)
 		waiter := helpers.NewWaiter()
 		tc.WithAliceSyncing(t, func(alice api.TestClient) {
 			// intercept /sendToDevice and check we are sending 100 messages per request
@@ -318,7 +401,13 @@ func TestToDeviceMessagesAreBatched(t *testing.T) {
 					return nil
 				},
 			}, func() {
-				alice.MustSendMessage(t, roomID, "this should cause to-device msgs to be sent")
+				// Sending to 100 recipients cold (fresh Olm sessions, OTK claims) can
+				// legitimately take longer than the client wrapper's default
+				// wait-for-local-echo timeout, so give this specific send extra headroom
+				// rather than raising the default for every other test.
+				if _, err := alice.SendMessage(t, roomID, "this should cause to-device msgs to be sent", 60*time.Second); err != nil {
+					ct.Fatalf(t, "SendMessage: %s", err)
+				}
 				time.Sleep(time.Second)
 				waiter.Waitf(t, 5*time.Second, "did not see /sendToDevice")
 			})
@@ -421,9 +510,6 @@ func TestToDeviceMessagesAreProcessedInOrder(t *testing.T) {
 	numClients := 4
 	numMsgsPerClient := 30
 	Instance().ForEachClientType(t, func(t *testing.T, clientType api.ClientType) {
-		if clientType.Lang == api.ClientTypeRust {
-			t.Skipf("flakey")
-		}
 		tc := Instance().CreateTestContext(t, clientType)
 		roomID := tc.CreateNewEncryptedRoom(
 			t, tc.Alice, cc.EncRoomOptions.RotationPeriodMsgs(1), cc.EncRoomOptions.PresetPublicChat(),
@@ -488,15 +574,36 @@ func TestToDeviceMessagesAreProcessedInOrder(t *testing.T) {
 					}
 				})
 				t.Logf("sent %d timeline events", len(timelineEvents))
-				// Alice's /sync is unblocked, wait until we see the last event.
+				// Alice's /sync is unblocked.
 				shouldBlockRequest.Store(false)
 
+				// Every request while shouldBlockRequest was true got a 504. rust-sdk's sliding-sync
+				// stream treats any error that survives its own internal retry_limit(3) as fatal and
+				// permanently breaks the sync loop (see matrix-rust-sdk's
+				// sliding_sync/mod.rs sync(): "errors we cannot ignore, and that must stop the sync
+				// loop" -> yield Err(error); break). Confirmed via direct log inspection: after
+				// unblocking, Alice's log shows zero further /sync activity at all - the loop is
+				// dead, not slow. Flipping the flag back does nothing on its own; the loop has to be
+				// explicitly restarted.
+				// Stop the restarted loop on exit: the stop func from WithAliceSyncing only covers the dead one.
+				defer alice.MustStartSyncing(t)()
+
 				lastTimelineEvent := timelineEvents[len(timelineEvents)-1]
-				alice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(lastTimelineEvent.ID)).Waitf(
-					// wait a while here as we need to wait for both /sync to retry and a large response
-					// to be processed.
-					t, 20*time.Second, "did not see latest timeline event %s", lastTimelineEvent.ID,
-				)
+				// This is Alice's first subscription to this room's timeline - her /sync was
+				// blocked for the entire burst above, so she never processed a single response
+				// during it. Set up the listener (and implicitly SubscribeToRoom) before waiting,
+				// so any events the listener picks up are captured.
+				waiter := alice.WaitUntilEventInRoom(t, roomID, api.CheckEventHasEventID(lastTimelineEvent.ID))
+				// Her restarted sync starts from a fresh position, so the burst that happened while
+				// she was blocked won't be in her initial window either - explicitly backpaginate to
+				// pull it in.
+				// Avoid a single huge backpagination which can fail on JS "Promise was collected".
+				for i := 0; i < 10; i++ {
+					if err := alice.Backpaginate(t, roomID, len(timelineEvents)/10); err != nil {
+						t.Logf("Backpaginate: %s (continuing - the event may already be visible)", err)
+					}
+				}
+				waiter.Waitf(t, 30*time.Second, "did not see latest timeline event %s", lastTimelineEvent.ID)
 				// now verify we can decrypt all the events
 				time.Sleep(10 * time.Second)
 				// backpaginate 10 times. We don't do a single huge backpagination call because

@@ -41,6 +41,13 @@ func (r *LanguageBindings) PostTestRun(contextID string) {
 	// Instead, we do this call when RPC clients are closed.
 }
 
+// rpcStartupTimeout bounds how long to wait for the RPC binary to echo its port.
+// The binary normally boots in tens of milliseconds; the previous 1s budget was
+// too tight under 4-way shard contention. This is process startup, not a test
+// correctness wait, and it only applies to a binary that is alive but silent -
+// a binary that exits is detected immediately via the stdout reader.
+const rpcStartupTimeout = 5 * time.Second
+
 // MustCreateClient starts the RPC server and configures it to use the
 // correct language. Returns an error if:
 //   - the binary cannot be found or run
@@ -70,6 +77,12 @@ func (r *LanguageBindings) MustCreateClient(t ct.TestLike, cfg api.ClientCreatio
 
 	select {
 	case p := <-portCh:
+		if p.err != nil {
+			// The binary exited (or closed stdout) before echoing a port. The reader
+			// goroutine has already logged its output line-by-line, so this names
+			// "crashed" rather than obscuring it behind a DialHTTP failure.
+			ct.Fatalf(t, "RPC (%s): RPC binary exited before echoing a port: %s. Path: %s", contextID, p.err, r.binaryPath)
+		}
 		rpcAddr := fmt.Sprintf("127.0.0.1:%d", p.port)
 		var void int
 		client, err := rpc.DialHTTP("tcp", rpcAddr)
@@ -86,13 +99,19 @@ func (r *LanguageBindings) MustCreateClient(t ct.TestLike, cfg api.ClientCreatio
 			ct.Fatalf(t, "RPC (%s): failed to create RPC client: %s", contextID, err)
 		}
 		return &RPCClient{
-			client: client,
-			lang:   r.clientType,
-			rpcCmd: rpcCmd,
+			client:      client,
+			lang:        r.clientType,
+			rpcCmd:      rpcCmd,
 			logsFlushed: logsFlushed,
 		}
-	case <-time.After(time.Second):
-		ct.Fatalf(t, "RPC (%s): timed out waiting for port number to be echoed to stdout. Did the RPC binary run, and is it actually the RPC binary? Path: %s", contextID, r.binaryPath)
+	case <-time.After(rpcStartupTimeout):
+		// The binary is alive but has not echoed a port. Kill it so it and the
+		// reader goroutine don't outlive the test, drain so the reader can flush
+		// whatever output it captured, then report with that context.
+		_ = rpcCmd.Process.Kill()
+		<-portCh
+		<-logsFlushed
+		ct.Fatalf(t, "RPC (%s): the RPC binary produced no port within %s. Path: %s", contextID, rpcStartupTimeout, r.binaryPath)
 	}
 	panic("unreachable")
 }
@@ -190,7 +209,7 @@ func (c *RPCClient) Close(t ct.TestLike) {
 
 	// Wait for the goroutine that copies stdout to the logs to complete
 	t.Logf("RPCClient.Close: waiting for server to shut down")
-	<- c.logsFlushed
+	<-c.logsFlushed
 	t.Logf("RPCClient.Close: done")
 }
 
@@ -277,11 +296,16 @@ func (c *RPCClient) IsRoomEncrypted(t ct.TestLike, roomID string) (bool, error) 
 }
 
 // SendMessage tries to send the message, but can fail.
-func (c *RPCClient) SendMessage(t ct.TestLike, roomID, text string) (eventID string, err error) {
+func (c *RPCClient) SendMessage(t ct.TestLike, roomID, text string, timeout ...time.Duration) (eventID string, err error) {
+	var to time.Duration
+	if len(timeout) > 0 {
+		to = timeout[0]
+	}
 	err = c.client.Call("Server.SendMessage", RPCSendMessage{
 		TestName: t.Name(),
 		RoomID:   roomID,
 		Text:     text,
+		Timeout:  to,
 	}, &eventID)
 	return
 }
