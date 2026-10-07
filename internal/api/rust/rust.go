@@ -684,7 +684,7 @@ func (c *RustClient) SubscribeToRoom(t ct.TestLike, roomID string) error {
 	err := c.syncService.RoomListService().SetRoomSubscriptions(roomIDs)
 	c.subMu.Unlock()
 	if err != nil {
-		return fmt.Errorf("cannot subscribe to room %s: %s", roomID, err)
+		return fmt.Errorf("cannot set subscriptions (adding %s): %s", roomID, err)
 	}
 	return nil
 }

@@ -101,6 +101,7 @@ rebuild-js-sdk js-sdk-version=LOCAL_JS_SDK:
     #!/usr/bin/env bash
     set -euo pipefail
     spec={{ quote(js-sdk-version) }}
+    remote_spec=false
     case "$spec" in
         *"@file:"*|file:*)
             dir="${spec#*file:}"
@@ -110,6 +111,7 @@ rebuild-js-sdk js-sdk-version=LOCAL_JS_SDK:
             fi
             ;;
         *)
+            remote_spec=true
             rest="${spec#matrix-js-sdk@}"
             url="${rest%%#*}"
             sha="${rest##*#}"
@@ -122,21 +124,31 @@ rebuild-js-sdk js-sdk-version=LOCAL_JS_SDK:
                 echo "error: spec must be a registry version (matrix-js-sdk@X.Y.Z) or 'matrix-js-sdk@<url>#<sha>': $spec" >&2
                 exit 1
             fi
-            dir="${XDG_CACHE_HOME:-$HOME/.cache}/complement-crypto/matrix-js-sdk/$sha"
+            resolved_sha="$(git ls-remote "$url" "$sha" | awk 'NR == 1 { print $1 }')"
+            if [ -z "$resolved_sha" ]; then
+                echo "error: could not resolve '$sha' in '$url'" >&2
+                exit 1
+            fi
+            dir="${XDG_CACHE_HOME:-$HOME/.cache}/complement-crypto/matrix-js-sdk/$resolved_sha"
             if [ ! -f "$dir/lib/index.js" ]; then
-                echo "materialising $url @ $sha into $dir"
+                echo "materialising $url @ $sha ($resolved_sha) into $dir"
                 if [ ! -d "$dir/.git" ]; then
                     mkdir -p "$dir"
                     git -C "$dir" init -q
                     git -C "$dir" remote add origin "$url"
                 fi
-                git -C "$dir" fetch -q --depth 1 origin "$sha"
+                git -C "$dir" fetch -q --depth 1 origin "$resolved_sha"
                 git -C "$dir" checkout -q FETCH_HEAD
                 (cd "$dir" && pnpm install --frozen-lockfile && pnpm build)
             fi
             ;;
     esac
     ./rebuild_js_sdk.sh "matrix-js-sdk@file:$dir"
+    if [ "$remote_spec" = true ]; then
+        # Keep the requested remote spec and Yarn's resolved lock entry after
+        # building from the lockfile in the cached checkout above.
+        (cd internal/api/js/js-sdk && corepack yarn add "$spec")
+    fi
 
 # Generate every build artifact the test harness needs, from configurable
 # sources. Safe to re-run: each artifact is only built when missing.

@@ -133,9 +133,8 @@ func (i *Instance) CreateTestContext(t *testing.T, clientType ...api.ClientType)
 
 // ResolveNamespace returns the namespace applied to every Docker network/container a test
 // package deploys (e.g. `complement_<namespace>.<blueprint>.hs1`). If COMPLEMENT_CRYPTO_NAMESPACE
-// is set it is used for all packages, otherwise defaultNamespace is used. Sharded runs
-// should set it uniquely per `go test` process; because every package derives its namespace
-// the same way, packages run in the same shard share it and different shards are isolated.
+// is set, it is combined with defaultNamespace to keep packages isolated. Sharded runs
+// should set it uniquely per `go test` process to keep shards isolated.
 // Values containing characters outside [A-Za-z0-9_.-] would produce invalid Docker names so
 // are rejected with a clear message.
 func ResolveNamespace(defaultNamespace string) string {
@@ -148,5 +147,5 @@ func ResolveNamespace(defaultNamespace string) string {
 			panic("COMPLEMENT_CRYPTO_NAMESPACE must contain only characters in [A-Za-z0-9_.-], got: " + raw)
 		}
 	}
-	return raw
+	return defaultNamespace + "_" + raw
 }

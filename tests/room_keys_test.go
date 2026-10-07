@@ -438,7 +438,17 @@ func testRoomKeyIsNotCycledOnClientRestartRust(t *testing.T, clientType api.Clie
 		},
 		Multiprocess: true,
 	})
-	remoteAliceStopSyncing := remoteAlice.MustStartSyncing(t)
+	remoteAliceClosed := false
+	var remoteAliceStopSyncing func()
+	t.Cleanup(func() {
+		if remoteAliceStopSyncing != nil {
+			remoteAliceStopSyncing()
+		}
+		if !remoteAliceClosed {
+			remoteAlice.Close(t)
+		}
+	})
+	remoteAliceStopSyncing = remoteAlice.MustStartSyncing(t)
 
 	tc.WithClientSyncing(t, &cc.ClientCreationRequest{
 		User: tc.Bob,
@@ -456,7 +466,9 @@ func testRoomKeyIsNotCycledOnClientRestartRust(t *testing.T, clientType api.Clie
 			// opts/device id (mirrors the JS variant).
 			aliceOpts := remoteAlice.Opts()
 			remoteAliceStopSyncing()
+			remoteAliceStopSyncing = nil
 			remoteAlice.Close(t)
+			remoteAliceClosed = true
 
 			var secondSessionID string
 			tc.WithClientSyncing(t, &cc.ClientCreationRequest{

@@ -75,13 +75,14 @@ func TestDelayedInviteResponse(t *testing.T) {
 				bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(tc.Bob.UserID, "join")).Waitf(t, 7*time.Second, "did not see own join")
 				bob.MustBackpaginate(t, roomID, 3)
 
-				// poll until the event is either decrypted or known-undecryptable
+				// Poll until the event is decrypted. FailedToDecrypt can be temporary
+				// while the room key is still arriving.
 				var ev *api.Event
 				deadline := time.Now().Add(10 * time.Second)
 				for {
 					var err error
 					if err = bob.Backpaginate(t, roomID, 3); err == nil {
-						if ev, err = bob.GetEvent(t, roomID, eventID); err == nil && (ev.FailedToDecrypt || ev.Text != "") {
+						if ev, err = bob.GetEvent(t, roomID, eventID); err == nil && !ev.FailedToDecrypt && ev.Text != "" {
 							break
 						}
 					}
