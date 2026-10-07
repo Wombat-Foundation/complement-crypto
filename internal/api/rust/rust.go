@@ -243,9 +243,14 @@ func (c *RustClient) Login(t ct.TestLike, opts api.ClientCreationOpts) error {
 	if opts.DeviceID != "" {
 		deviceID = &opts.DeviceID
 	}
-	err := c.FFIClient.Login(opts.UserID, opts.Password, nil, deviceID)
-	if err != nil {
-		return fmt.Errorf("Client.Login failed: %s", err)
+	// NewRustClient restores the session before returning when AccessToken is
+	// supplied. Calling Login again on that client fails with
+	// AlreadyInitializedError, which breaks persistent-storage restarts.
+	if opts.AccessToken == "" {
+		err := c.FFIClient.Login(opts.UserID, opts.Password, nil, deviceID)
+		if err != nil {
+			return fmt.Errorf("Client.Login failed: %s", err)
+		}
 	}
 	// let the client upload device keys and one-time keys
 	e := c.FFIClient.Encryption()

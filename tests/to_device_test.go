@@ -406,7 +406,7 @@ func TestToDeviceMessagesAreBatched(t *testing.T) {
 				// wait-for-local-echo timeout, so give this specific send extra headroom
 				// rather than raising the default for every other test.
 				if _, err := alice.SendMessage(t, roomID, "this should cause to-device msgs to be sent", 60*time.Second); err != nil {
-					t.Fatalf("MustSendMessage: %s", err)
+					ct.Fatalf(t, "SendMessage: %s", err)
 				}
 				time.Sleep(time.Second)
 				waiter.Waitf(t, 5*time.Second, "did not see /sendToDevice")
