@@ -12,6 +12,8 @@ COMPLEMENT_DIR := justfile_directory()
 #
 #   LOCAL_JS_SDK='matrix-js-sdk@file:/abs/path/to/matrix-js-sdk' just rebuild-js-sdk
 LOCAL_JS_SDK := env_var_or_default("LOCAL_JS_SDK", "matrix-js-sdk@https://gitlab.com/Wombat-Foundation/matrix-js-sdk#ba48cf7c768996e17b90d9565109f1ea837b5eea")
+RUST_SDK_PROFILE := env_var_or_default("COMPLEMENT_CRYPTO_RUST_SDK_PROFILE", "dev")
+RUST_SDK_TARGET_DIR := if RUST_SDK_PROFILE == "dev" { "debug" } else { RUST_SDK_PROFILE }
 
 # Replace the `install-uniffi-bindgen` recipe with this once uniffi-bindgen-go
 # gets a release with Uniffi 0.32 support.
@@ -49,14 +51,17 @@ install-uniffi-bindgen:
 # The checkout path defaults to the COMPLEMENT_CRYPTO_RUST_SDK_DIR environment
 # variable / .env entry (or pass it as an argument). This produces the
 # internal/api/rust/matrix_sdk_ffi Go bindings plus
-# <checkout>/target/debug/libmatrix_sdk_ffi.{a,so} that the tests link against.
+# <checkout>/target/<profile>/libmatrix_sdk_ffi.{a,so} that the tests link against.
 # (requires on PATH: cargo, uniffi-bindgen-go)
 rebuild-rust-sdk rust-sdk-path=env_var("COMPLEMENT_CRYPTO_RUST_SDK_DIR"):
-    {{ just_executable() }} _build-rust-sdk {{ quote(rust-sdk-path) }}
+    {{ just_executable() }} _build-rust-sdk {{ quote(rust-sdk-path) }} {{ quote(RUST_SDK_PROFILE) }} {{ quote(RUST_SDK_TARGET_DIR) }}
     {{ just_executable() }} _patch-ldflags
+    ( cd {{ quote(COMPLEMENT_DIR) }} && \
+        LIBRARY_PATH="{{ rust-sdk-path }}/target/{{ RUST_SDK_TARGET_DIR }}:${LIBRARY_PATH:-}" \
+        go build -tags=rust ./internal/api/rust/... )
 
 [private]
-_build-rust-sdk dir:
+_build-rust-sdk dir profile target-dir:
     #!/usr/bin/env bash
     set -euxo pipefail
     cd "{{ dir }}"
@@ -65,21 +70,18 @@ _build-rust-sdk dir:
     # brittle (depended on the exact `matrix-sdk-crypto = {` shape), left the
     # checkout dirty, and could silently no-op, so the tests could link a
     # library that still enforced the minimum rotation period.
-    cargo build -p matrix-sdk-ffi \
+    cargo build --profile {{ quote(profile) }} -p matrix-sdk-ffi \
         --features sentry,_only-for-testing-disable-megolm-minimum-rotation-period-ms
-    uniffi-bindgen-go -o {{ COMPLEMENT_DIR }}/internal/api/rust --config {{ COMPLEMENT_DIR }}/uniffi.toml --library ./target/debug/libmatrix_sdk_ffi.a
+    uniffi-bindgen-go -o {{ quote(COMPLEMENT_DIR + "/internal/api/rust") }} --config {{ quote(COMPLEMENT_DIR + "/uniffi.toml") }} --library ./target/{{ target-dir }}/libmatrix_sdk_ffi.a
     # uniffi-bindgen-go releases that predate Uniffi 0.32 ignore the `go_mod`
     # setting in uniffi.toml and emit bare crate imports (e.g. "matrix_sdk"),
     # which do not resolve inside the Go module. Qualify them with the
     # configured module path. Idempotent: only the bare form is matched.
-    go_mod="$(sed -nE 's/^go_mod[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' {{ COMPLEMENT_DIR }}/uniffi.toml | head -n1)"
+    go_mod="$(sed -nE 's/^go_mod[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' {{ quote(COMPLEMENT_DIR + "/uniffi.toml") }} | head -n1)"
     if [ -n "$go_mod" ]; then
-        find {{ COMPLEMENT_DIR }}/internal/api/rust -name '*.go' -print0 \
-            | xargs -0 -r sed -i -E "s#^([[:space:]]*)\"(matrix_sdk[a-z_]*|ruma_events)\"#\1\"$go_mod/\2\"#"
+        GO_MOD="$go_mod" find {{ quote(COMPLEMENT_DIR + "/internal/api/rust") }} -name '*.go' -exec \
+            perl -pi -e 's#^([[:space:]]*)"(matrix_sdk[a-z_]*|ruma_events)"#\1"$ENV{GO_MOD}/\2"#' {} +
     fi
-    # Verify the regenerated bindings compile: a bindgen/ABI mismatch should
-    # fail here with the compiler error, not later as a mysterious empty run.
-    ( cd {{ COMPLEMENT_DIR }} && go build -tags=rust ./internal/api/rust/... )
 
 
 # Rebuild the version of matrix-js-sdk embedded in the JS bundle.
@@ -111,8 +113,13 @@ rebuild-js-sdk js-sdk-version=LOCAL_JS_SDK:
             rest="${spec#matrix-js-sdk@}"
             url="${rest%%#*}"
             sha="${rest##*#}"
-            if [ "$url" = "$rest" ] || [ "$url" = "$sha" ] || [ -z "$sha" ]; then
-                echo "error: remote spec must be 'matrix-js-sdk@<url>#<sha>': $spec" >&2
+            if [[ "$url" = "$rest" && "$spec" =~ ^matrix-js-sdk@[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$ ]]; then
+                # Registry versions (for example matrix-js-sdk@29.1.0) are
+                # supported by rebuild_js_sdk.sh and documented in README.md.
+                ./rebuild_js_sdk.sh "$spec"
+                exit 0
+            elif [ "$url" = "$rest" ] || [ -z "$sha" ]; then
+                echo "error: spec must be a registry version (matrix-js-sdk@X.Y.Z) or 'matrix-js-sdk@<url>#<sha>': $spec" >&2
                 exit 1
             fi
             dir="${XDG_CACHE_HOME:-$HOME/.cache}/complement-crypto/matrix-js-sdk/$sha"
@@ -150,7 +157,8 @@ bootstrap:
     fi
     if [ -z "${COMPLEMENT_CRYPTO_RUST_SDK_DIR:-}" ]; then
         echo "note: COMPLEMENT_CRYPTO_RUST_SDK_DIR unset; skipping Rust bindings (JS-only)."
-    elif [ -f internal/api/rust/matrix_sdk_ffi/matrix_sdk_ffi.go ]; then
+    elif [ -f internal/api/rust/matrix_sdk_ffi/matrix_sdk_ffi.go ] && \
+         [ -f "${COMPLEMENT_CRYPTO_RUST_SDK_DIR}/target/{{ RUST_SDK_TARGET_DIR }}/libmatrix_sdk_ffi.a" ]; then
         echo "Rust bindings already present (force with: just rebuild-rust-sdk)"
     else
         "{{ just_executable() }}" rebuild-rust-sdk
@@ -167,4 +175,5 @@ _patch-ldflags:
     if grep -q '#cgo LDFLAGS: -lmatrix_sdk_ffi' "$f"; then
         exit 0
     fi
-    sed -i 's^// #include <matrix_sdk_ffi.h>^// #include <matrix_sdk_ffi.h>\n// #cgo LDFLAGS: -lmatrix_sdk_ffi^' "$f"
+    perl -0pi.bak -e 's{// #include <matrix_sdk_ffi\.h>}{// #include <matrix_sdk_ffi.h>\n// #cgo LDFLAGS: -lmatrix_sdk_ffi}' "$f"
+    rm -f "$f.bak"

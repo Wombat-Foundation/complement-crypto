@@ -115,7 +115,8 @@ it is running inside the tests.*
 ### Bootstrapping the generated build artifacts
 
 The tests embed two gitignored, generated artifact sets, so a fresh checkout
-(or a `git clean`) has neither:
+(or a `git clean -fdx`) has neither (warning: `-x` also removes untracked
+configuration and environment files):
 
 * `internal/api/js/{js-sdk,chrome}/dist` -- the bundled JavaScript SDK.
 * `internal/api/rust/matrix_sdk*` and `ruma_events` -- the Go bindings for the

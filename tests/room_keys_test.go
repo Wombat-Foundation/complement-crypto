@@ -454,13 +454,14 @@ func testRoomKeyIsNotCycledOnClientRestartRust(t *testing.T, clientType api.Clie
 		sniffToDeviceEvent(t, tc, func(pc *callback.PassiveChannel) {
 			// restart alice: explicit stop-sync then Close, then reopen on the same
 			// opts/device id (mirrors the JS variant).
+			aliceOpts := remoteAlice.Opts()
 			remoteAliceStopSyncing()
 			remoteAlice.Close(t)
 
 			var secondSessionID string
 			tc.WithClientSyncing(t, &cc.ClientCreationRequest{
 				User: tc.Alice,
-				Opts: remoteAlice.Opts(),
+				Opts: aliceOpts,
 			}, func(alice api.TestClient) {
 				// we don't know how long it will take for the device list update to be processed, so wait 1s
 				time.Sleep(time.Second)
