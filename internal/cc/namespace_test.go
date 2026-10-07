@@ -12,8 +12,8 @@ func TestResolveNamespace(t *testing.T) {
 	// acceptable values override the default, for every package
 	for _, v := range []string{"crypto", "shard_01", "a.B-c9", "_", ".-"} {
 		t.Setenv("COMPLEMENT_CRYPTO_NAMESPACE", v)
-		if got := ResolveNamespace("rust"); got != v {
-			t.Fatalf("ResolveNamespace(env=%q) = %q, want %q", v, got, v)
+		if got := ResolveNamespace("rust"); got != "rust_"+v {
+			t.Fatalf("ResolveNamespace(env=%q) = %q, want %q", v, got, "rust_"+v)
 		}
 	}
 

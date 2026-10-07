@@ -49,6 +49,9 @@ jobs:
           cache: "yarn"
           cache-dependency-path: "internal/api/js/js-sdk/yarn.lock"
 
+      - name: Setup | pnpm
+        run: corepack enable pnpm
+
       - name: Setup | Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
@@ -83,8 +86,7 @@ jobs:
       # matrix-js-sdk#4291) until that lands upstream.
       - name: Build JS SDK
         run: |
-          JS_SDK_REF=ba48cf7c768996e17b90d9565109f1ea837b5eea
-          ./rebuild_js_sdk.sh "matrix-js-sdk@https://gitlab.com/Wombat-Foundation/matrix-js-sdk#$JS_SDK_REF"
+          just rebuild-js-sdk
 
       - name: Build Rust FFI bindings
         run: |

@@ -80,9 +80,15 @@ func TestVerificationSAS(t *testing.T) {
 				verifieeStage := verifiee.ListenForVerificationRequests(t)
 				verifierStage := verifier.RequestOwnUserVerification(t)
 				var lastReceiver, lastSender string
-				for {
+				timeout := time.NewTimer(30 * time.Second)
+				defer timeout.Stop()
+				for verifieeStage != nil || verifierStage != nil {
 					select {
-					case receiverStage := <-verifieeStage:
+					case receiverStage, ok := <-verifieeStage:
+						if !ok {
+							verifieeStage = nil
+							continue
+						}
 						lastReceiver = fmt.Sprintf("%T", receiverStage)
 						switch stage := receiverStage.(type) {
 						case api.VerificationStageRequestedReceiver:
@@ -109,7 +115,11 @@ func TestVerificationSAS(t *testing.T) {
 						case api.VerificationStageCancelled: // should not be cancelled
 							ct.Errorf(t, "[RECEIVER] VerificationStageCancelled")
 						}
-					case senderStage := <-verifierStage:
+					case senderStage, ok := <-verifierStage:
+						if !ok {
+							verifierStage = nil
+							continue
+						}
 						lastSender = fmt.Sprintf("%T", senderStage)
 						switch stage := senderStage.(type) {
 						case api.VerificationStageRequestedReceiver: // the verifier should not get a requestee state
@@ -142,7 +152,7 @@ func TestVerificationSAS(t *testing.T) {
 					// only fails sharded). This is a real correctness wait, not masking a
 					// hang: a genuine handshake failure still trips DidFail/DidCancel and
 					// arrives as VerificationStageCancelled, not a timeout.
-					case <-time.After(30 * time.Second):
+					case <-timeout.C:
 						ct.Fatalf(t, "timed out after 30s waiting for verification stages (last receiver=%s, last sender=%s)", lastReceiver, lastSender)
 						return
 					}

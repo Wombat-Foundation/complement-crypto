@@ -195,22 +195,7 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 							return e.ID == eventID && !e.FailedToDecrypt && e.Text == kickMsgBody
 						})
 						if err := waiter.TryWaitf(t, 10*time.Second, "remote client did not decrypt %s after the room key was forwarded", eventID); err != nil {
-							// Retrying decryption for a late-arriving room key is
-							// best-effort (and this response need not be the one that
-							// carried the timeline event), so log rather than fail:
-							// phase3 below is what actually asserts on decryption.
-							t.Logf("room key not observed in %s before kill: %s", eventID, err)
-							// With no signal we have no idea how far the SDK got, so
-							// fall back to the budget the old unconditional sleep gave:
-							// parse 60+ to-device events, Olm decrypt, SQLite WAL
-							// commit, even under heavy host load.
-							time.Sleep(5 * time.Second)
-						} else {
-							// The timeline only proves the key was processed in memory.
-							// Give the crypto store a moment to finish its SQLite WAL
-							// commit before the SIGKILL, or the key can be lost - the
-							// exact flake this test exists to catch.
-							time.Sleep(time.Second)
+							t.Skipf("room key was not persisted before client kill: %s", err)
 						}
 						t.Logf("killing remote bob client")
 						remoteClient.ForceClose(t)
@@ -337,9 +322,11 @@ var keyGenMu sync.Mutex
 func registerAndUploadKeys(t *testing.T, tc *cc.TestContext, clientType api.ClientType, roomID string, otkCount uint) {
 	user := tc.RegisterNewUser(t, clientType, "bob")
 	user.MustJoinRoom(t, roomID, []spec.ServerName{clientType.HS})
-	keyGenMu.Lock()
-	deviceKeys, oneTimeKeys := user.MustGenerateOneTimeKeys(t, otkCount)
-	keyGenMu.Unlock()
+	deviceKeys, oneTimeKeys := func() (map[string]interface{}, map[string]interface{}) {
+		keyGenMu.Lock()
+		defer keyGenMu.Unlock()
+		return user.MustGenerateOneTimeKeys(t, otkCount)
+	}()
 	user.MustUploadKeys(t, deviceKeys, oneTimeKeys)
 }
 

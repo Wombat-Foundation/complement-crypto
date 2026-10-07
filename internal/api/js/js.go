@@ -676,7 +676,7 @@ func (c *JSClient) StartSyncing(t ct.TestLike) (stopSyncing func(), err error) {
 			close(ch)
 		}
 	})
-	chrome.RunAsyncFn[chrome.Void](t, c.browser.Ctx, `
+	if _, err := chrome.RunAsyncFn[chrome.Void](t, c.browser.Ctx, `
 		// startClient() does not cancel the SDK's reconnect backoff after a
 		// deliberate /sync failure storm. Keep waking a pending keep-alive until
 		// the client is actually syncing, rather than racing startup registration.
@@ -701,7 +701,10 @@ func (c *JSClient) StartSyncing(t ct.TestLike) (stopSyncing func(), err error) {
 			stopRetrying();
 			throw e;
 		}
-	`)
+	`); err != nil {
+		cancel()
+		return nil, fmt.Errorf("[%s](js) startClient failed: %s", c.userID, err)
+	}
 	select {
 	case <-time.After(5 * time.Second):
 		return nil, fmt.Errorf("[%s](js) took >5s to StartSyncing", c.userID)
