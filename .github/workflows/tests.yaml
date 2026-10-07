@@ -84,7 +84,7 @@ jobs:
       - name: Build JS SDK
         run: |
           JS_SDK_REF=ba48cf7c768996e17b90d9565109f1ea837b5eea
-          ./rebuild_js_sdk.sh "matrix-js-sdk@https://gitlab.com/Wombat-Foundation/matrix-js-sdk#$JS_SDK_REF"
+          just rebuild-js-sdk "matrix-js-sdk@https://gitlab.com/Wombat-Foundation/matrix-js-sdk#$JS_SDK_REF"
 
       - name: Build Rust FFI bindings
         run: |
