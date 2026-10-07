@@ -39,8 +39,8 @@ test rust-sdk-path pattern="":
 
     COMPLEMENT_CRYPTO_TEST_CLIENT_MATRIX=rr \
     COMPLEMENT_BASE_IMAGE={{ BASE_IMAGE }} \
-    LIBRARY_PATH="${LIBRARY_PATH:-}:$(realpath {{ rust-sdk-path }}/target/debug)" \
-    LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:$(realpath {{ rust-sdk-path }}/target/debug)" \
+    LIBRARY_PATH="${LIBRARY_PATH:-}:$(realpath {{ rust-sdk-path }}/target/{{ RUST_SDK_TARGET_DIR }})" \
+    LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:$(realpath {{ rust-sdk-path }}/target/{{ RUST_SDK_TARGET_DIR }})" \
     go test -v -count=1 -tags=rust -timeout 15m ./tests {{ if pattern != "" { "-run " + pattern } else { "" } }}
 
 # Install the uniffi-bindgen-go command line utility, necessary to build the bindings.
