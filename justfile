@@ -124,7 +124,7 @@ rebuild-js-sdk js-sdk-version=LOCAL_JS_SDK:
                 echo "error: spec must be a registry version (matrix-js-sdk@X.Y.Z) or 'matrix-js-sdk@<url>#<sha>': $spec" >&2
                 exit 1
             fi
-            resolved_sha="$(git ls-remote "$url" "$sha" | awk 'NR == 1 { print $1 }')"
+            resolved_sha="$(git ls-remote "$url" | awk -v sha="$sha" '$1 == sha { print $1; exit }')"
             if [ -z "$resolved_sha" ]; then
                 echo "error: could not resolve '$sha' in '$url'" >&2
                 exit 1
