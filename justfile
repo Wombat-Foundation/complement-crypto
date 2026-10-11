@@ -11,7 +11,7 @@ COMPLEMENT_DIR := justfile_directory()
 # .env entry to test a local checkout (the path must be absolute):
 #
 #   LOCAL_JS_SDK='matrix-js-sdk@file:/abs/path/to/matrix-js-sdk' just rebuild-js-sdk
-LOCAL_JS_SDK := env_var_or_default("LOCAL_JS_SDK", "matrix-js-sdk@https://gitlab.com/Wombat-Foundation/matrix-js-sdk#ba48cf7c768996e17b90d9565109f1ea837b5eea")
+LOCAL_JS_SDK := env_var_or_default("LOCAL_JS_SDK", "matrix-js-sdk@https://gitlab.com/Wombat-Foundation/matrix-js-sdk#6f02c775b982c6cd36de2891e4e181fb6ddda533")
 RUST_SDK_PROFILE := env_var_or_default("COMPLEMENT_CRYPTO_RUST_SDK_PROFILE", "dev")
 RUST_SDK_TARGET_DIR := if RUST_SDK_PROFILE == "dev" { "debug" } else { RUST_SDK_PROFILE }
 
