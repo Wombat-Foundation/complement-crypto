@@ -91,12 +91,13 @@ _build-rust-sdk dir profile target-dir:
 # (LOCAL_JS_SDK, above) and can be overridden by argument or environment.
 #
 # A remote spec is first materialised into a per-commit build cache
-# (git fetch + `pnpm install --frozen-lockfile && pnpm build`). `yarn add <git
+# (git fetch + `corepack pnpm install --frozen-lockfile` and
+# `corepack pnpm build`). `yarn add <git
 # url>` cannot build the package on its own: it has no lockfile, so it resolves
 # newer vite/vitest types and fails `tsc`. A local `file:` path is used as-is
 # and must be absolute, because yarn resolves `file:` against
 # internal/api/js/js-sdk, differently at each nesting depth.
-# (requires on PATH: git, pnpm, corepack)
+# (requires on PATH: git and corepack)
 rebuild-js-sdk js-sdk-version=LOCAL_JS_SDK:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -139,7 +140,7 @@ rebuild-js-sdk js-sdk-version=LOCAL_JS_SDK:
                 fi
                 git -C "$dir" fetch -q --depth 1 origin "$resolved_sha"
                 git -C "$dir" checkout -q FETCH_HEAD
-                (cd "$dir" && pnpm install --frozen-lockfile && pnpm build)
+                (cd "$dir" && corepack pnpm install --frozen-lockfile && corepack pnpm build)
             fi
             ;;
     esac
