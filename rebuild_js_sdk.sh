@@ -48,6 +48,16 @@ esac
 # (e.g. a relative symlink left by an earlier `file:` install) makes `yarn add`
 # fail with EEXIST or yields a broken symlink into node_modules.
 rm -rf ./internal/api/js/js-sdk/node_modules/matrix-js-sdk
-(cd ./internal/api/js/js-sdk && corepack yarn add "$1" && corepack yarn install && corepack yarn build)
+case "$JS_SDK_VERSION" in
+    *"@file:"*|file:*)
+        # This checkout was built with its own frozen lockfile before being
+        # installed here. Running its prepare script again under Yarn resolves
+        # a different dependency tree and can fail its declaration build.
+        (cd ./internal/api/js/js-sdk && corepack yarn add --ignore-scripts "$1" && corepack yarn install --ignore-scripts && corepack yarn build)
+        ;;
+    *)
+        (cd ./internal/api/js/js-sdk && corepack yarn add "$1" && corepack yarn install && corepack yarn build)
+        ;;
+esac
 rm -rf ./internal/api/js/chrome/dist || echo 'no dist directory detected';
 cp -r ./internal/api/js/js-sdk/dist/. ./internal/api/js/chrome/dist

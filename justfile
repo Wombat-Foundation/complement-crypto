@@ -145,9 +145,15 @@ rebuild-js-sdk js-sdk-version=LOCAL_JS_SDK:
     esac
     ./rebuild_js_sdk.sh "matrix-js-sdk@file:$dir"
     if [ "$remote_spec" = true ]; then
-        # Keep the requested remote spec and Yarn's resolved lock entry after
-        # building from the lockfile in the cached checkout above.
-        (cd internal/api/js/js-sdk && corepack yarn add "$spec")
+        # Record the requested remote spec in package.json/yarn.lock after
+        # building from the lockfile in the cached checkout above. Skip it when
+        # the tracked manifest already pins this exact spec: `yarn add <git url>`
+        # runs the package's own `prepare` (tsc) without a lockfile, which
+        # resolves newer vite/vitest types and fails. --ignore-scripts keeps it
+        # from building when the pin does need to change.
+        if ! grep -qF "\"matrix-js-sdk\": \"$rest\"" internal/api/js/js-sdk/package.json; then
+            (cd internal/api/js/js-sdk && corepack yarn add --ignore-scripts "$spec")
+        fi
     fi
 
 # Generate every build artifact the test harness needs, from configurable
