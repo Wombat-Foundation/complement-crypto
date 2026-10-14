@@ -361,14 +361,28 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 				// What must work: a message sent once bob2 is in the room is encrypted
 				// for bob2's device as well.
 				t.Run("post-join message", func(t *testing.T) {
-					body2 := "Alice sends this after bob2 joined"
-					// alice learns bob2's device from a device_lists.changed in her sync; sending
-					// before that would legitimately not encrypt for it. If the server never
-					// sends the update, this still fails after the barrier.
-					time.Sleep(time.Second)
-					waiter2 := bob2.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(body2))
-					alice.MustSendMessage(t, roomID, body2)
-					waiter2.Waitf(t, 20*time.Second, "bob2 did not decrypt a message sent after joining")
+					// Alice learns bob2's device from a device_lists.changed sync. Probe
+					// with distinct messages until that update arrives and bob2 decrypts
+					// one, or fail after the same overall budget as the previous waiter.
+					deadline := time.Now().Add(20 * time.Second)
+					var lastErr error
+					for attempt := 1; time.Now().Before(deadline); attempt++ {
+						body2 := fmt.Sprintf("Alice sends this after bob2 joined (probe %d)", attempt)
+						waiter2 := bob2.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(body2))
+						if _, err := alice.SendMessage(t, roomID, body2); err != nil {
+							t.Fatalf("alice could not send post-join probe %d: %s", attempt, err)
+						}
+						wait := time.Second
+						if remaining := time.Until(deadline); remaining < wait {
+							wait = remaining
+						}
+						if err := waiter2.TryWaitf(t, wait, "bob2 did not decrypt post-join probe %d", attempt); err == nil {
+							return
+						} else {
+							lastErr = err
+						}
+					}
+					t.Fatalf("bob2 did not decrypt any post-join message within 20s; last attempt: %v", lastErr)
 				})
 			})
 		})
