@@ -474,6 +474,8 @@ func testRoomKeyIsNotCycledOnClientRestartRust(t *testing.T, clientType api.Clie
 			tc.WithClientSyncing(t, &cc.ClientCreationRequest{
 				User: tc.Alice,
 				Opts: aliceOpts,
+				// restart in the same mode as the first client, so only the restart differs
+				Multiprocess: true,
 			}, func(alice api.TestClient) {
 				// we don't know how long it will take for the device list update to be processed, so wait 1s
 				time.Sleep(time.Second)
