@@ -293,8 +293,8 @@ func TestOnNewDeviceBobCanSeeButNotDecryptHistoryInPublicRoom(t *testing.T) {
 // `history_visibility: shared` (PresetPublicChat): forwarding the room key to a newly-joined
 // device for pre-join history is not reliably implemented today - confirmed empirically,
 // neither JS nor Rust consistently decrypts within a generous wait, and either can occasionally
-// succeed depending on timing. If bob2 cannot decrypt, the test is skipped (not passed) so it is visibly
-// not exercised; if it does decrypt, the plaintext must be correct.
+// succeed depending on timing. If bob2 cannot decrypt it, that is logged and the test goes on; if it
+// does decrypt, the plaintext must be correct. A message sent after bob2 joined must always decrypt.
 func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 	Instance().ClientTypeMatrix(t, func(t *testing.T, clientTypeA, clientTypeB api.ClientType) {
 		tc := Instance().CreateTestContext(t, clientTypeA, clientTypeB)
@@ -346,11 +346,20 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 					}
 					time.Sleep(250 * time.Millisecond)
 				}
+				// The pre-join message predates bob2's device, so decrypting it needs
+				// key forwarding that clients do not do reliably: report, don't fail.
 				if event.FailedToDecrypt {
-					t.Skipf("bob2 could not decrypt the pre-join message: known SDK inconsistency in key forwarding to new devices")
+					t.Logf("bob2 could not decrypt the pre-join message (known SDK limitation in key forwarding to new devices)")
 				} else {
 					must.Equal(t, event.Text, body, "bob2 decrypted to the wrong body")
 				}
+
+				// What must work: a message sent once bob2 is in the room is encrypted
+				// for bob2's device as well.
+				body2 := "Alice sends this after bob2 joined"
+				waiter2 := bob2.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(body2))
+				alice.MustSendMessage(t, roomID, body2)
+				waiter2.Waitf(t, 20*time.Second, "bob2 did not decrypt a message sent after joining")
 			})
 		})
 	})
