@@ -669,6 +669,7 @@ func (c *RustClient) SubscribeToRoom(t ct.TestLike, roomID string) error {
 		return fmt.Errorf("cannot subscribe to room %s: StartSyncing not yet called", roomID)
 	}
 	c.subMu.Lock()
+	defer c.subMu.Unlock()
 	c.subscribed[roomID] = struct{}{}
 	roomIDs := make([]string, 0, len(c.subscribed))
 	for id := range c.subscribed {
@@ -682,7 +683,6 @@ func (c *RustClient) SubscribeToRoom(t ct.TestLike, roomID string) error {
 	// after a newer one. On failure, retain the requested room so a later call
 	// retries the complete desired set.
 	err := c.syncService.RoomListService().SetRoomSubscriptions(roomIDs)
-	c.subMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("cannot set subscriptions (adding %s): %s", roomID, err)
 	}
