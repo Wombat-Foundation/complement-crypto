@@ -362,6 +362,10 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 				// for bob2's device as well.
 				t.Run("post-join message", func(t *testing.T) {
 					body2 := "Alice sends this after bob2 joined"
+					// alice learns bob2's device from a device_lists.changed in her sync; sending
+					// before that would legitimately not encrypt for it. If the server never
+					// sends the update, this still fails after the barrier.
+					time.Sleep(time.Second)
 					waiter2 := bob2.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(body2))
 					alice.MustSendMessage(t, roomID, body2)
 					waiter2.Waitf(t, 20*time.Second, "bob2 did not decrypt a message sent after joining")
