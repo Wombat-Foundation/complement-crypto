@@ -23,7 +23,7 @@ func (b *RustLanguageBindings) PreTestRun(contextID string) {
 	// nuke persistent storage from previous run. We do this on startup rather than teardown
 	// to allow devs to introspect DBs / Chrome profiles if tests fail.
 	if contextID == "" {
-		os.RemoveAll("./rust_storage")
+		os.RemoveAll("./" + rust.StorageDir())
 	}
 	if contextID != "" {
 		contextID = "_" + contextID

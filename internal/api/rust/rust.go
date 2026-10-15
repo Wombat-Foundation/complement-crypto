@@ -95,6 +95,16 @@ type RustClient struct {
 	notifClient *matrix_sdk_ffi.NotificationClient
 }
 
+// StorageDir is where this process keeps its SDK stores. Sharded runs number users
+// independently, so two shards can both create @user-12-bob:hs1/NEW_DEVICE; each gets its
+// own directory so neither inherits the other's state or deletes it at startup.
+func StorageDir() string {
+	if namespace := os.Getenv("COMPLEMENT_CRYPTO_NAMESPACE"); namespace != "" {
+		return "rust_storage/" + namespace
+	}
+	return "rust_storage"
+}
+
 func NewRustClient(t ct.TestLike, opts api.ClientCreationOpts) (api.Client, error) {
 	t.Logf("NewRustClient[%s][%s] creating...", opts.UserID, opts.DeviceID)
 
@@ -118,13 +128,8 @@ func NewRustClient(t ct.TestLike, opts api.ClientCreationOpts) (api.Client, erro
 
 	// @alice:hs1, FOOBAR => alice_hs1_FOOBAR
 	username := strings.Replace(opts.UserID[1:], ":", "_", -1) + "_" + opts.DeviceID
-	// Sharded runs number users independently, so two shards can both create
-	// @user-12-bob:hs1/NEW_DEVICE; keep their stores apart or one inherits the other's state.
-	if namespace := os.Getenv("COMPLEMENT_CRYPTO_NAMESPACE"); namespace != "" {
-		username += "_" + namespace
-	}
 
-	sessionPath := "rust_storage/" + username
+	sessionPath := StorageDir() + "/" + username
 	storeKey := []byte("my_secret_thirty-two_byte_string")
 	ab = ab.SqliteStore(
 		matrix_sdk_ffi.NewSqliteStoreBuilder(sessionPath, sessionPath).Key(&storeKey),
@@ -144,7 +149,7 @@ func NewRustClient(t ct.TestLike, opts api.ClientCreationOpts) (api.Client, erro
 		subMu:                 &sync.Mutex{},
 		subscribed:            make(map[string]struct{}),
 		opts:                  opts,
-		persistentStoragePath: "./rust_storage/" + username,
+		persistentStoragePath: "./" + StorageDir() + "/" + username,
 		closed:                &atomic.Bool{},
 	}
 	if opts.AccessToken != "" { // restore the session
