@@ -41,6 +41,7 @@ func TestDelayedInviteResponse(t *testing.T) {
 
 			config := tc.Deployment.MITM().Configure(t)
 			serverHasInvite := helpers.NewWaiter()
+			const delayTime = 3 * time.Second
 			config.WithIntercept(mitm.InterceptOpts{
 				Filter: mitm.FilterParams{
 					PathContains: "/sync",
@@ -52,7 +53,6 @@ func TestDelayedInviteResponse(t *testing.T) {
 						`"membership":"invite"`,
 					) {
 						t.Logf("/sync => %v", string(cd.ResponseBody))
-						delayTime := 3 * time.Second
 						t.Logf("intercepted /sync response which has the invite, tarpitting for %v - %v", delayTime, cd)
 						serverHasInvite.Finish()
 						time.Sleep(delayTime)
@@ -75,21 +75,26 @@ func TestDelayedInviteResponse(t *testing.T) {
 				bob.WaitUntilEventInRoom(t, roomID, api.CheckEventHasMembership(tc.Bob.UserID, "join")).Waitf(t, 7*time.Second, "did not see own join")
 				bob.MustBackpaginate(t, roomID, 3)
 
-				time.Sleep(time.Second) // let things settle / decrypt
-
-				ev := bob.MustGetEvent(t, roomID, eventID)
-
-				// TODO: FIXME fix this issue in the SDK
-				// -
-				//
-				if ev.FailedToDecrypt || ev.Text != "hello world!" {
-					if clientType.Lang == api.ClientTypeRust {
-						t.Skipf("known broken: see https://github.com/matrix-org/matrix-rust-sdk/issues/3622")
+				// Poll until the event is decrypted. FailedToDecrypt can be temporary
+				// while the room key is still arriving.
+				var ev *api.Event
+				deadline := time.Now().Add(10 * time.Second)
+				for {
+					var err error
+					if err = bob.Backpaginate(t, roomID, 3); err == nil {
+						if ev, err = bob.GetEvent(t, roomID, eventID); err == nil && !ev.FailedToDecrypt && ev.Text != "" {
+							break
+						}
 					}
-					if clientType.Lang == api.ClientTypeJS {
-						t.Skipf("known broken: see https://github.com/matrix-org/matrix-js-sdk/issues/4291")
+					if time.Now().After(deadline) {
+						t.Fatalf("event %s never settled in bob's timeline (last err: %v)", eventID, err)
 					}
+					time.Sleep(250 * time.Millisecond)
 				}
+
+				// Both langs run the real race: Alice sends while the invite /sync is still
+				// tarpitted. rust-sdk#3622 no longer reproduces; js needs the fix for
+				// matrix-js-sdk#4291 (refresh crypto membership after a successful /invite).
 				must.Equal(t, ev.FailedToDecrypt, false, "failed to decrypt event")
 				must.Equal(t, ev.Text, "hello world!", "failed to decrypt plaintext")
 			})

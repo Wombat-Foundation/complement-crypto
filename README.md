@@ -18,18 +18,21 @@ This means you MUST compile at least 1 SDK in order for Complement-Crypto to com
 
 #### JS SDK
 
-Run `./rebuild_js_sdk.sh` according to its help page:
-```
-Rebuild the version of JS SDK used. (requires on PATH: yarn)
-Usage: ./rebuild_js_sdk.sh [version]
-  [version]: the yarn/npm package to use. This is fed directly into 'yarn add' so branches/commits can be used
+Run `just rebuild-js-sdk` (requires `just`, `git`, `pnpm`, and `corepack` on
+your `PATH`, which provides `yarn`). It defaults to the pinned GitLab fork, or
+you can pass a registry version, remote Git URL, or local checkout:
 
-Examples:
-  Install a released version:    ./rebuild_js_sdk.sh matrix-js-sdk@29.1.0
-  Install develop branch:        ./rebuild_js_sdk.sh matrix-js-sdk@https://github.com/matrix-org/matrix-js-sdk#develop
-  Install specific commit:       ./rebuild_js_sdk.sh matrix-js-sdk@https://github.com/matrix-org/matrix-js-sdk#36c958642cda08d32bc19c2303ebdfca470d03c1
-  Install from a local checkout: ./rebuild_js_sdk.sh matrix-js-sdk@file:/path/to/local/js/sdk"
 ```
+just rebuild-js-sdk matrix-js-sdk@29.1.0
+just rebuild-js-sdk matrix-js-sdk@https://github.com/matrix-org/matrix-js-sdk#develop
+just rebuild-js-sdk matrix-js-sdk@https://github.com/matrix-org/matrix-js-sdk#36c958642cda08d32bc19c2303ebdfca470d03c1
+just rebuild-js-sdk matrix-js-sdk@file:/path/to/local/js/sdk
+```
+
+`./rebuild_js_sdk.sh` takes a required argument and passes it directly to
+`yarn add`; it does not perform the source materialisation step used by
+`just rebuild-js-sdk`. See [FAQ.md](FAQ.md#using-your-local-matrix-js-sdk) for
+the local-checkout workflow, which needs an extra build step.
 
 #### Rust SDK
 

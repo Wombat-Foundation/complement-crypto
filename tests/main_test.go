@@ -15,8 +15,7 @@ var (
 // Main entry point when users run `go test`. Defined in https://pkg.go.dev/testing#hdr-Main
 func TestMain(m *testing.M) {
 	instance = cc.NewInstance(config.NewComplementCryptoConfigFromEnvVars("./mitmproxy_addons"))
-	instance.TestMain(m, "crypto")
-
+	instance.TestMain(m, cc.ResolveNamespace("crypto"))
 }
 
 // Instance returns the test instance. Guaranteed to be non-nil if called in a test,

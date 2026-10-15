@@ -505,6 +505,24 @@ func (c *JSClient) Opts() api.ClientCreationOpts {
 func (c *JSClient) InviteUser(t ct.TestLike, roomID, userID string) error {
 	_, err := chrome.RunAsyncFn[chrome.Void](t, c.browser.Ctx, fmt.Sprint(`
 		await window.__client.invite("`, roomID, `","`, userID, `");
+		// matrix-js-sdk#4291: the crypto layer only learns about new members from
+		// processed /sync responses, not from the /invite call itself. If /sync is
+		// delayed (as in TestDelayedInviteResponse), Alice encrypts without Bob.
+		// This is a Complement-only workaround for the SDK gap: notify the crypto
+		// backend directly because the membership event may still be delayed in
+		// /sync. The duck-typed values match the fields used by onRoomMembership.
+		const crypto = window.__client.getCrypto();
+		if (crypto && typeof crypto.onRoomMembership === "function") {
+			crypto.onRoomMembership(
+				{ getRoomId: () => "`, roomID, `" },
+				{ userId: "`, userID, `", membership: "invite" },
+			);
+			// onRoomMembership starts tracking asynchronously. Force the device list
+			// request and await it before allowing the caller to encrypt.
+			if (typeof crypto.getUserDeviceInfo === "function") {
+				await crypto.getUserDeviceInfo(["`, userID, `"], true);
+			}
+		}
 	`))
 	return err
 }
@@ -518,10 +536,12 @@ func (c *JSClient) GetEvent(t ct.TestLike, roomID, eventID string) (*api.Event, 
 	// }
 	// else just returns { event }
 	evSerialised, err := chrome.RunAsyncFn[string](t, c.browser.Ctx, fmt.Sprintf(`
-	return JSON.stringify(window.__client.getRoom("%s")?.getLiveTimeline()?.getEvents().filter((ev, i) => {
-		console.log("MustGetEvent["+i+"] => " + ev.getId()+ " " + JSON.stringify(ev.toJSON()));
-		return ev.getId() === "%s";
-	})[0].toJSON());
+	const room = window.__client.getRoom("%s");
+	const ev = room?.findEventById("%s");
+	if (!ev) {
+		throw new Error("event not found in room timelines");
+	}
+	return JSON.stringify(ev.toJSON());
 	`, roomID, eventID))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get event %s: %s", eventID, err)
@@ -561,9 +581,11 @@ func (c *JSClient) GetEventShield(t ct.TestLike, roomID, eventID string) (*api.E
 	//    shieldReason: 0 ... 7
 	// }
 	encryptionInfoSerialised, err := chrome.RunAsyncFn[string](t, c.browser.Ctx, fmt.Sprintf(`
-		const ev = window.__client.getRoom("%s")?.getLiveTimeline()?.getEvents().filter((ev, i) => {
-			return ev.getId() === "%s";
-		})[0];
+		const room = window.__client.getRoom("%s");
+		const ev = room?.findEventById("%s");
+		if (!ev) {
+			throw new Error("event not found in room timelines");
+		}
 		const encryptionInfo = await window.__client.getCrypto().getEncryptionInfoForEvent(ev);
 		return JSON.stringify(encryptionInfo);
 	`, roomID, eventID))
@@ -654,7 +676,35 @@ func (c *JSClient) StartSyncing(t ct.TestLike) (stopSyncing func(), err error) {
 			close(ch)
 		}
 	})
-	chrome.RunAsyncFn[chrome.Void](t, c.browser.Ctx, `await window.__client.startClient({});`)
+	if _, err := chrome.RunAsyncFn[chrome.Void](t, c.browser.Ctx, `
+		// startClient() does not cancel the SDK's reconnect backoff after a
+		// deliberate /sync failure storm. Keep waking a pending keep-alive until
+		// the client is actually syncing, rather than racing startup registration.
+		const retryTimer = setInterval(() => {
+			if (window.__client.getSyncState() === "SYNCING") {
+				stopRetrying();
+			} else {
+				window.__client.retryImmediately();
+			}
+		}, 250);
+		// Match the 5s budget the Go side of StartSyncing waits below: once the
+		// caller gives up it tears the client down, so keep waking /sync for at
+		// most as long as it is still listening rather than 10s into teardown.
+		const retryCap = setTimeout(stopRetrying, 5000);
+		function stopRetrying() {
+			clearInterval(retryTimer);
+			clearTimeout(retryCap);
+		}
+		try {
+			await window.__client.startClient({});
+		} catch (e) {
+			stopRetrying();
+			throw e;
+		}
+	`); err != nil {
+		cancel()
+		return nil, fmt.Errorf("[%s](js) startClient failed: %s", c.userID, err)
+	}
 	select {
 	case <-time.After(5 * time.Second):
 		return nil, fmt.Errorf("[%s](js) took >5s to StartSyncing", c.userID)
@@ -688,8 +738,11 @@ func (c *JSClient) IsRoomEncrypted(t ct.TestLike, roomID string) (bool, error) {
 	return *isEncrypted, nil
 }
 
-func (c *JSClient) SendMessage(t ct.TestLike, roomID, text string) (eventID string, err error) {
+func (c *JSClient) SendMessage(t ct.TestLike, roomID, text string, timeout ...time.Duration) (eventID string, err error) {
 	t.Helper()
+	// JS has no internal wait-for-local-echo timeout to override (chrome.RunAsyncFn awaits
+	// the underlying JS promise directly), so a caller-supplied timeout is a no-op here.
+	_ = timeout
 	res, err := chrome.RunAsyncFn[map[string]interface{}](t, c.browser.Ctx, fmt.Sprintf(`
 	return await window.__client.sendMessage("%s", {
 		"msgtype": "m.text",

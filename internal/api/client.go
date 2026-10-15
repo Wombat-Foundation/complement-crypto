@@ -52,7 +52,12 @@ type Client interface {
 	// SendMessage sends the given text as an encrypted/unencrypted message in the room, depending
 	// if the room is encrypted or not. Returns the event ID of the sent event, so MUST BLOCK until the event has been sent.
 	// If the event cannot be sent, returns an error.
-	SendMessage(t ct.TestLike, roomID, text string) (eventID string, err error)
+	//
+	// An optional timeout may be passed to override the implementation's default wait-for-local-echo
+	// timeout (only the first value is used). This exists for stress tests with unusually large
+	// fan-out (e.g. sending to a room with 100+ recipients, where session establishment can
+	// legitimately take longer than the default) - ordinary call sites should omit it.
+	SendMessage(t ct.TestLike, roomID, text string, timeout ...time.Duration) (eventID string, err error)
 	// Wait until an event is seen in the given room. The checker functions can be custom or you can use
 	// a pre-defined one like api.CheckEventHasMembership, api.CheckEventHasBody, or api.CheckEventHasEventID.
 	WaitUntilEventInRoom(t ct.TestLike, roomID string, checker func(e Event) bool) Waiter
@@ -228,10 +233,10 @@ func (c *LoggedClient) IsRoomEncrypted(t ct.TestLike, roomID string) (bool, erro
 	return c.Client.IsRoomEncrypted(t, roomID)
 }
 
-func (c *LoggedClient) SendMessage(t ct.TestLike, roomID, text string) (eventID string, err error) {
+func (c *LoggedClient) SendMessage(t ct.TestLike, roomID, text string, timeout ...time.Duration) (eventID string, err error) {
 	t.Helper()
 	c.Logf(t, "%s SendMessage %s => %s", c.logPrefix(), roomID, text)
-	eventID, err = c.Client.SendMessage(t, roomID, text)
+	eventID, err = c.Client.SendMessage(t, roomID, text, timeout...)
 	c.Logf(t, "%s SendMessage %s => %s %s", c.logPrefix(), roomID, eventID, err)
 	return
 }
@@ -254,7 +259,7 @@ func (c *LoggedClient) Backpaginate(t ct.TestLike, roomID string, count int) err
 		result = fmt.Sprintf("ERROR: %v", err)
 	}
 	c.Logf(t, "%s Backpaginate %d %s => %s", c.logPrefix(), count, roomID, result)
-	
+
 	return err
 }
 

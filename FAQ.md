@@ -112,6 +112,47 @@ Perhaps server logs aren't giving enough information and you want to see all HTT
 information, you will need to modify the client code and rebuild it to make sure
 it is running inside the tests.*
 
+### Bootstrapping the generated build artifacts
+
+The tests embed two gitignored, generated artifact sets, so a fresh checkout
+(or a `git clean -fdx`) has neither (warning: `-x` also removes untracked
+configuration and environment files):
+
+* `internal/api/js/{js-sdk,chrome}/dist` -- the bundled JavaScript SDK.
+* `internal/api/rust/matrix_sdk*` and `ruma_events` -- the Go bindings for the
+  Rust SDK (`uniffi-bindgen-go` output), plus the shared library the tests link
+  against.
+
+Both are produced from configurable sources:
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `LOCAL_JS_SDK` | matrix-js-sdk spec: `matrix-js-sdk@<git-url>#<sha>` or `matrix-js-sdk@file:/abs/path` | pinned Wombat-Foundation fork commit |
+| `COMPLEMENT_CRYPTO_RUST_SDK_DIR` | path to a matrix-rust-sdk checkout | unset (Rust step skipped) |
+
+Generate both with:
+
+```
+just bootstrap
+```
+
+It is idempotent: each artifact is built only if missing. Override a source
+per-invocation, e.g.
+
+```
+LOCAL_JS_SDK='matrix-js-sdk@file:/abs/path/to/matrix-js-sdk' just bootstrap
+COMPLEMENT_CRYPTO_RUST_SDK_DIR=/path/to/matrix-rust-sdk just bootstrap
+```
+
+Or set them machine-wide in `.env` (loaded automatically). A remote JS spec is
+materialised into a git + `pnpm` build cache under
+`${XDG_CACHE_HOME:-~/.cache}/complement-crypto/matrix-js-sdk/<sha>`, so
+rebuilding the same commit is cheap. Force a rebuild of one artifact with
+`just rebuild-js-sdk` / `just rebuild-rust-sdk`.
+
+Rust bindings need `cargo` and `uniffi-bindgen-go` on `PATH`
+(`just install-uniffi-bindgen`); JS bundling needs `git`, `pnpm` and `corepack`.
+
 ### JS SDK
 #### Changing the JavaScript directly (the easy way)
 
@@ -146,7 +187,45 @@ If you want to try out changes within a local `matrix-js-sdk`:
 
     and make any changes you want to make.
 
-2. `./rebuild-js-sdk.sh ../path/to/matrix-js-sdk`
+2. Build your checkout so that it has a `lib/` directory. A `file:` install
+   copies the source tree verbatim without running the SDK's build, so
+   `matrix-js-sdk`'s `main` (`./lib/index.js`) won't resolve otherwise:
+
+    ```
+    cd ../path/to/matrix-js-sdk
+    pnpm install   # or `yarn install`; runs `prepare`, which runs the build
+    ```
+
+    Repeat steps 2 and 3 after every change you make to the checkout. Step 3
+    copies the built `file:` dependency into the test bundle; rebuilding the
+    checkout alone does not refresh the bundle.
+
+3. Rebuild the JS SDK used by the tests:
+
+    ```
+    just rebuild-js-sdk matrix-js-sdk@file:/abs/path/to/matrix-js-sdk
+    ```
+
+    Use an absolute path. `file:` is resolved by yarn relative to
+    `internal/api/js/js-sdk` (the directory `rebuild_js_sdk.sh` runs `yarn add`
+    in), so a relative path resolves somewhere else, and to a different place
+    depending on how deeply this repo is nested.
+
+    A bare `just rebuild-js-sdk` defaults to the pinned Wombat-Foundation fork
+    on GitLab, so it is safe to run without arguments. To test a local checkout
+    instead, pass the spec as an argument or via the `LOCAL_JS_SDK` environment
+    variable / `.env` entry:
+
+    ```
+    echo 'LOCAL_JS_SDK=matrix-js-sdk@file:/abs/path/to/matrix-js-sdk' >> .env
+    just rebuild-js-sdk
+    ```
+
+4. A `file:` spec only affects the built bundle: `rebuild_js_sdk.sh` snapshots
+   `internal/api/js/js-sdk/package.json` and `yarn.lock` before `yarn add` and
+   restores them afterwards, so no local path is ever left in version control.
+   The committed manifests stay pinned to the GitLab fork commit, which is what
+   CI resolves.
 
 #### Using your local matrix-rust-sdk-crypto-wasm and matrix-rust-sdk
 

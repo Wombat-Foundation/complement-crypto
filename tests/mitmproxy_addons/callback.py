@@ -122,9 +122,11 @@ class Callback:
                        "Content-Type": "application/json",
                     }
 
-                    # If we're handling a response callback, copy the CORS headers from the original response
+                    # If we're handling a response callback, copy the CORS headers from the original response.
+                    # HTTP header names are case-insensitive: homeservers commonly emit these
+                    # lowercase, particularly when an HTTP/2 hop is involved.
                     if flow.response is not None:
-                        response_headers.update({k: v for k, v in flow.response.headers.items() if k.startswith("Access-Control")})
+                        response_headers.update({k: v for k, v in flow.response.headers.items() if k.lower().startswith("access-control-")})
 
                     flow.response = Response.make(
                         respond_status_code, json.dumps(respond_body), headers=response_headers,
