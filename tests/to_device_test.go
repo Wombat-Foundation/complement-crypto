@@ -166,7 +166,7 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 		// its stdout reader must not outlive the test.
 		var closeRemote sync.Once
 		forceCloseRemote := func() { closeRemote.Do(func() { remoteClient.ForceClose(t) }) }
-		defer forceCloseRemote()
+		t.Cleanup(forceCloseRemote)
 
 		// start syncing but don't wait, we wait for the to device event
 		go func() {
@@ -199,8 +199,23 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 						waiter := remoteClient.WaitUntilEventInRoom(t, roomID, func(e api.Event) bool {
 							return e.ID == eventID && !e.FailedToDecrypt && e.Text == kickMsgBody
 						})
-						if err := waiter.TryWaitf(t, 10*time.Second, "remote client did not decrypt %s after the room key was forwarded", eventID); err != nil {
-							t.Skipf("room key was not persisted before client kill: %s", err)
+						waitResult := make(chan error, 1)
+						go func() {
+							waitResult <- waiter.TryWaitf(t, 10*time.Second, "remote client did not decrypt %s after the room key was forwarded", eventID)
+						}()
+					decryptionWait:
+						for {
+							select {
+							case err := <-waitResult:
+								if err != nil {
+									t.Fatalf("room key was not persisted before client kill: %s", err)
+								}
+								break decryptionWait
+							case <-activeChannel.Chan():
+								// Keep the SDK's sync stream moving while it applies
+								// the key and decrypts the timeline event.
+								activeChannel.Send(t, nil)
+							}
 						}
 						t.Logf("killing remote bob client")
 						forceCloseRemote()
