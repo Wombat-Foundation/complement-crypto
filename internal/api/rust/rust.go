@@ -848,7 +848,8 @@ func (c *RustClient) Backpaginate(t ct.TestLike, roomID string, count int) error
 	defer c.FFISpan.Exit()
 
 	t.Helper()
-	_, timeline := c.findRoom(t, roomID)
+	// A client that has only just started syncing may not have been given the room yet.
+	_, timeline := c.findRoomWithin(t, roomID, roomAppearTimeout)
 	if timeline == nil {
 		return fmt.Errorf("Backpaginate: cannot find timeline for room %s", roomID)
 	}
@@ -861,6 +862,26 @@ func (c *RustClient) Backpaginate(t ct.TestLike, roomID string, count int) error
 
 func (c *RustClient) UserID() string {
 	return c.userID
+}
+
+// roomAppearTimeout is how long to wait for a syncing client to be given a room.
+const roomAppearTimeout = 10 * time.Second
+
+// findRoomWithin is findRoom, retried until the room shows up in the room list or the timeout elapses.
+func (c *RustClient) findRoomWithin(
+	t ct.TestLike,
+	roomID string,
+	timeout time.Duration,
+) (*matrix_sdk_ffi.Room, *matrix_sdk_ffi.Timeline) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		room, timeline := c.findRoom(t, roomID)
+		if room != nil || time.Now().After(deadline) {
+			return room, timeline
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 func (c *RustClient) findRoomInCache(roomID string) (*matrix_sdk_ffi.Room, *matrix_sdk_ffi.Timeline) {
