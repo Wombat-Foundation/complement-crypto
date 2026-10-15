@@ -3,6 +3,7 @@ package tests
 import (
 	"fmt"
 	"github.com/matrix-org/gomatrixserverlib/spec"
+	"strings"
 	"testing"
 	"time"
 
@@ -365,10 +366,15 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 					// with distinct messages until that update arrives and bob2 decrypts
 					// one, or fail after the same overall budget as the previous waiter.
 					deadline := time.Now().Add(20 * time.Second)
+					// One waiter for every probe: a delayed decryption of an earlier
+					// probe still counts as success.
+					const probePrefix = "Alice sends this after bob2 joined (probe "
+					waiter2 := bob2.WaitUntilEventInRoom(t, roomID, func(e api.Event) bool {
+						return !e.FailedToDecrypt && strings.HasPrefix(e.Text, probePrefix)
+					})
 					var lastErr error
 					for attempt := 1; time.Now().Before(deadline); attempt++ {
-						body2 := fmt.Sprintf("Alice sends this after bob2 joined (probe %d)", attempt)
-						waiter2 := bob2.WaitUntilEventInRoom(t, roomID, api.CheckEventHasBody(body2))
+						body2 := fmt.Sprintf("%s%d)", probePrefix, attempt)
 						if _, err := alice.SendMessage(t, roomID, body2); err != nil {
 							t.Fatalf("alice could not send post-join probe %d: %s", attempt, err)
 						}
@@ -376,10 +382,8 @@ func TestChangingDeviceAfterInviteReEncrypts(t *testing.T) {
 						if remaining := time.Until(deadline); remaining < wait {
 							wait = remaining
 						}
-						if err := waiter2.TryWaitf(t, wait, "bob2 did not decrypt post-join probe %d", attempt); err == nil {
+						if lastErr = waiter2.TryWaitf(t, wait, "bob2 did not decrypt a post-join probe (sent %d)", attempt); lastErr == nil {
 							return
-						} else {
-							lastErr = err
 						}
 					}
 					t.Fatalf("bob2 did not decrypt any post-join message within 20s; last attempt: %v", lastErr)

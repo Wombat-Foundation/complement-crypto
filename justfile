@@ -125,7 +125,19 @@ rebuild-js-sdk js-sdk-version=LOCAL_JS_SDK:
                 echo "error: spec must be a registry version (matrix-js-sdk@X.Y.Z) or 'matrix-js-sdk@<url>#<sha>': $spec" >&2
                 exit 1
             fi
-            resolved_sha="$(git ls-remote "$url" | awk -v sha="$sha" '$1 == sha || $2 == "refs/heads/" sha || $2 == "refs/tags/" sha || $2 == "refs/tags/" sha "^{}" { print $1; exit }')"
+            if [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+                # A full commit hash is used as is: ls-remote only lists branch and
+                # tag tips, so it can't vouch for arbitrary (historical) commits.
+                resolved_sha="$sha"
+            else
+                # Branch or tag name; for an annotated tag prefer the peeled commit.
+                resolved_sha="$(git ls-remote "$url" | awk -v sha="$sha" '
+                    $2 == "refs/heads/" sha { head = $1 }
+                    $2 == "refs/tags/" sha { tag = $1 }
+                    $2 == "refs/tags/" sha "^{}" { peeled = $1 }
+                    $1 == sha { exact = $1 }
+                    END { print (peeled != "" ? peeled : (tag != "" ? tag : (head != "" ? head : exact))) }')"
+            fi
             if [ -z "$resolved_sha" ]; then
                 echo "error: could not resolve '$sha' in '$url'" >&2
                 exit 1

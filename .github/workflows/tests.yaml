@@ -82,11 +82,11 @@ jobs:
         with:
           tool: just
 
-      # Pinned to Wombat-Foundation/matrix-js-sdk@ba48cf7c7 (refresh crypto membership after invite,
+      # Pinned to Wombat-Foundation/matrix-js-sdk@6f02c775b (refresh crypto membership after invite,
       # matrix-js-sdk#4291) until that lands upstream.
       - name: Build JS SDK
         run: |
-          JS_SDK_REF=ba48cf7c768996e17b90d9565109f1ea837b5eea
+          JS_SDK_REF=6f02c775b982c6cd36de2891e4e181fb6ddda533
           just rebuild-js-sdk "matrix-js-sdk@https://gitlab.com/Wombat-Foundation/matrix-js-sdk#$JS_SDK_REF"
 
       - name: Build Rust FFI bindings

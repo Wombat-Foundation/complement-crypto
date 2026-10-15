@@ -162,6 +162,11 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 			Opts:         bobOpts,
 			Multiprocess: true,
 		})
+		// Skipping or failing below exits this function early; the RPC child and
+		// its stdout reader must not outlive the test.
+		var closeRemote sync.Once
+		forceCloseRemote := func() { closeRemote.Do(func() { remoteClient.ForceClose(t) }) }
+		defer forceCloseRemote()
 
 		// start syncing but don't wait, we wait for the to device event
 		go func() {
@@ -198,7 +203,7 @@ func testUnprocessedToDeviceMessagesArentLostOnRestartRust(t *testing.T, tc *cc.
 							t.Skipf("room key was not persisted before client kill: %s", err)
 						}
 						t.Logf("killing remote bob client")
-						remoteClient.ForceClose(t)
+						forceCloseRemote()
 						goto phase3
 					}
 				}
