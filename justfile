@@ -92,9 +92,9 @@ _build-rust-sdk dir profile target-dir:
 #
 # A remote spec is first materialised into a per-commit build cache
 # (git fetch + `corepack pnpm install --frozen-lockfile` and
-# `corepack pnpm build`). `yarn add <git
-# url>` cannot build the package on its own: it has no lockfile, so it resolves
-# newer vite/vitest types and fails `tsc`. A local `file:` path is used as-is
+# `corepack pnpm build`). `yarn add <git url>` cannot build the package on its
+# own: it has no lockfile, so it resolves newer vite/vitest types and fails
+# `tsc`. A local `file:` path is used as-is
 # and must be absolute, because yarn resolves `file:` against
 # internal/api/js/js-sdk, differently at each nesting depth.
 # (requires on PATH: git and corepack)
@@ -158,15 +158,24 @@ rebuild-js-sdk js-sdk-version=LOCAL_JS_SDK:
     esac
     ./rebuild_js_sdk.sh "matrix-js-sdk@file:$dir"
     if [ "$remote_spec" = true ]; then
-        # Record the requested remote spec in package.json/yarn.lock after
-        # building from the lockfile in the cached checkout above. Skip it when
-        # the tracked manifest already pins this exact spec: `yarn add <git url>`
-        # runs the package's own `prepare` (tsc) without a lockfile, which
-        # resolves newer vite/vitest types and fails. --ignore-scripts keeps it
-        # from building when the pin does need to change.
-        if ! grep -qF "\"matrix-js-sdk\": \"$rest\"" internal/api/js/js-sdk/package.json; then
-            (cd internal/api/js/js-sdk && corepack yarn add --ignore-scripts "$spec")
-        fi
+        # Record the remote pin without asking Yarn to install the Git
+        # dependency. It was already built from the cached checkout's frozen
+        # lockfile; yarn add would fetch it again and may run its prepare step.
+        node -e '
+            const fs = require("node:fs");
+            const manifestPath = "internal/api/js/js-sdk/package.json";
+            const lockPath = "internal/api/js/js-sdk/yarn.lock";
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+            const oldSpec = manifest.dependencies["matrix-js-sdk"];
+            const newSpec = process.argv[1];
+            const lock = fs.readFileSync(lockPath, "utf8");
+            if (!lock.includes(oldSpec)) {
+                throw new Error(`matrix-js-sdk pin ${oldSpec} is missing from yarn.lock`);
+            }
+            manifest.dependencies["matrix-js-sdk"] = newSpec;
+            fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+            fs.writeFileSync(lockPath, lock.replaceAll(oldSpec, newSpec));
+        ' "$url#$resolved_sha"
     fi
 
 # Generate every build artifact the test harness needs, from configurable
