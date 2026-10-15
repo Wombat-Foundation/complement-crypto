@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -251,9 +252,20 @@ func externalURL(t *testing.T, c testcontainers.Container, exposedPort string) s
 	return fmt.Sprintf("http://%s:%s", host, mappedPort.Port())
 }
 
+// shardedLogName makes the container log file name unique per sharded `go test` process
+// (COMPLEMENT_CRYPTO_NAMESPACE), so concurrent shards do not overwrite each other's logs.
+func shardedLogName(filename string) string {
+	namespace := os.Getenv("COMPLEMENT_CRYPTO_NAMESPACE")
+	if namespace == "" {
+		return filename
+	}
+	ext := filepath.Ext(filename)
+	return strings.TrimSuffix(filename, ext) + "." + namespace + ext
+}
+
 func writeContainerLogs(readCloser io.ReadCloser, filename string) error {
 	os.Mkdir("./logs", os.ModePerm) // ignore error, we don't care if it already exists
-	w, err := os.Create("./logs/" + filename)
+	w, err := os.Create("./logs/" + shardedLogName(filename))
 	if err != nil {
 		return fmt.Errorf("os.Create: %s", err)
 	}
